@@ -3,6 +3,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 // MapLibre v6 is ESM-only; under a bundler the worker URL must be set explicitly.
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import mlcontour from 'maplibre-contour'; // default export only
+import { createRoadsAboveHighlight } from './roads-above.js';
 
 maplibregl.setWorkerUrl(workerUrl);
 
@@ -26,16 +27,13 @@ const CONTOUR_LINES = [
   { id: 'contour-2', color: '#1d4ed8', elevation: 1500 },
 ];
 
+// Roads above this line's elevation can be highlighted.
+const ROADS_ABOVE_LINE = CONTOUR_LINES[1]; // blue
+
 // Roads and labels: OpenStreetMap vector tiles (OpenMapTiles schema) and fonts
 // from OpenFreeMap, free and keyless.
 const OPENFREEMAP_TILEJSON = 'https://tiles.openfreemap.org/planet';
 const OPENFREEMAP_GLYPHS = 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf';
-
-// Each label toggle checkbox shows or hides one symbol layer (hidden by default).
-const LABEL_TOGGLES = {
-  'toggle-places': 'place-labels',
-  'toggle-summits': 'summit-labels',
-};
 
 const labelHalo = {
   'text-halo-color': 'rgb(255 255 255 / 0.9)',
@@ -59,9 +57,13 @@ const roadClassWidth = [
   1.5, // minor, service
 ];
 
-// The casing adds a zoom-scaled outline around the road fill.
-function roadWidth(casing) {
-  const [e8, e12, e16] = casing ? [0.5, 1.5, 3] : [0, 0, 0];
+// Road width by class and zoom, plus `extra` px (at zooms 8, 12, 16) for outlines.
+const ROAD_FILL = [0, 0, 0];
+const ROAD_CASING = [0.5, 1.5, 3];
+const ROAD_HIGHLIGHT = [2, 4, 8]; // yellow outline of roads above the blue line
+const ROAD_HIGHLIGHT_EDGE = [3, 5.5, 10.5]; // thin dark rim around the yellow
+
+function roadWidth([e8, e12, e16]) {
   return [
     'interpolate', ['exponential', 1.6], ['zoom'],
     8, ['+', e8, ['*', 0.3, roadClassWidth]],
@@ -69,6 +71,18 @@ function roadWidth(casing) {
     16, ['+', e16, ['*', 4, roadClassWidth]],
   ];
 }
+
+// Roads turn grey while the roads-above highlight is on, so the highlight stands out.
+const ROAD_COLORS = {
+  fill: [
+    'match', ['get', 'class'],
+    ['motorway', 'trunk'], '#f4a259',
+    ['primary', 'secondary'], '#ffd166',
+    '#ffffff',
+  ],
+  casing: '#4a3f35',
+};
+const MUTED_ROAD_COLORS = { fill: '#b8b8b8', casing: '#6e6e6e' };
 
 // Tunnels are drawn faintly, since they would otherwise appear on the terrain surface.
 const roadOpacity = ['case', ['==', ['get', 'brunnel'], 'tunnel'], 0.3, 1];
@@ -95,11 +109,12 @@ const map = new maplibregl.Map({
     version: 8,
     glyphs: OPENFREEMAP_GLYPHS,
     sources: {
-      // Separate DEM sources for 3D terrain and for hillshade/relief;
+      // Separate DEM sources for 3D terrain and for hillshade;
       // sharing one source degrades hillshade quality.
       terrain: { type: 'raster-dem', url: MAPTERHORN_TILEJSON },
       dem: { type: 'raster-dem', url: MAPTERHORN_TILEJSON },
       openmaptiles: { type: 'vector', url: OPENFREEMAP_TILEJSON },
+      'roads-above': { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
       contours: {
         type: 'vector',
         tiles: [
@@ -139,9 +154,32 @@ const map = new maplibregl.Map({
         filter: publicRoadFilter,
         layout: { 'line-join': 'round', 'line-cap': 'round' },
         paint: {
-          'line-color': '#4a3f35',
-          'line-width': roadWidth(true),
+          'line-color': ROAD_COLORS.casing,
+          'line-width': roadWidth(ROAD_CASING),
           'line-opacity': roadOpacity,
+        },
+      },
+      // Roads above the blue line (filled by createRoadsAboveHighlight): a thick
+      // yellow outline with a dark rim, between the road casing and its fill.
+      {
+        id: 'roads-above-edge',
+        type: 'line',
+        source: 'roads-above',
+        layout: { visibility: 'none', 'line-join': 'round', 'line-cap': 'round' },
+        paint: {
+          'line-color': '#2b2200',
+          'line-width': roadWidth(ROAD_HIGHLIGHT_EDGE),
+          'line-opacity': 0.8,
+        },
+      },
+      {
+        id: 'roads-above',
+        type: 'line',
+        source: 'roads-above',
+        layout: { visibility: 'none', 'line-join': 'round', 'line-cap': 'round' },
+        paint: {
+          'line-color': '#ffd000',
+          'line-width': roadWidth(ROAD_HIGHLIGHT),
         },
       },
       {
@@ -152,13 +190,8 @@ const map = new maplibregl.Map({
         filter: publicRoadFilter,
         layout: { 'line-join': 'round', 'line-cap': 'round' },
         paint: {
-          'line-color': [
-            'match', ['get', 'class'],
-            ['motorway', 'trunk'], '#f4a259',
-            ['primary', 'secondary'], '#ffd166',
-            '#ffffff',
-          ],
-          'line-width': roadWidth(false),
+          'line-color': ROAD_COLORS.fill,
+          'line-width': roadWidth(ROAD_FILL),
           'line-opacity': roadOpacity,
         },
       },
@@ -235,12 +268,47 @@ function contourFilter(elevation) {
   return ['==', ['get', 'ele'], elevation];
 }
 
-for (const [inputId, layerId] of Object.entries(LABEL_TOGGLES)) {
-  const input = document.getElementById(inputId);
-  input.addEventListener('change', () => {
-    map.setLayoutProperty(layerId, 'visibility', input.checked ? 'visible' : 'none');
-  });
+const roadsAbove = createRoadsAboveHighlight(map, {
+  demSource: contourDem,
+  // The DEM resolution the contour tiles use near this zoom (maxzoom 12, overzoom 2),
+  // so a highlight starts where the contour line crosses the road.
+  demZoom: () => Math.max(0, Math.min(12, Math.floor(map.getZoom()) - 2)),
+  roads: {
+    sourceId: 'openmaptiles',
+    sourceLayer: 'transportation',
+    // Tunnels run below the surface, so the terrain elevation doesn't apply.
+    filter: ['all', publicRoadFilter, ['!=', ['get', 'brunnel'], 'tunnel']],
+  },
+  targetSourceId: 'roads-above',
+  elevation: ROADS_ABOVE_LINE.elevation,
+});
+
+function setLayerVisible(layerId, on) {
+  map.setLayoutProperty(layerId, 'visibility', on ? 'visible' : 'none');
 }
+
+// Toggle switches. Their initial state is the checkboxes' `checked` in index.html.
+const TOGGLES = {
+  'toggle-places': (on) => setLayerVisible('place-labels', on),
+  'toggle-summits': (on) => setLayerVisible('summit-labels', on),
+  'toggle-roads-above': (on) => {
+    const colors = on ? MUTED_ROAD_COLORS : ROAD_COLORS;
+    map.setPaintProperty('road', 'line-color', colors.fill);
+    map.setPaintProperty('road-casing', 'line-color', colors.casing);
+    setLayerVisible('roads-above-edge', on);
+    setLayerVisible('roads-above', on);
+    roadsAbove.setEnabled(on);
+  },
+};
+
+for (const [inputId, apply] of Object.entries(TOGGLES)) {
+  const input = document.getElementById(inputId);
+  input.addEventListener('change', () => apply(input.checked));
+}
+// style.load fires before the first frame is drawn, so the initial state doesn't flash.
+map.once('style.load', () => {
+  for (const [inputId, apply] of Object.entries(TOGGLES)) apply(document.getElementById(inputId).checked);
+});
 
 // Contour elevation sliders: a shared tick column, then a readout + slider per line.
 const panel = document.getElementById('contour-panel');
@@ -276,6 +344,7 @@ CONTOUR_LINES.forEach((line, i) => {
   slider.addEventListener('input', () => {
     readout.textContent = `${slider.value} m`;
     map.setFilter(line.id, contourFilter(slider.valueAsNumber));
+    if (line === ROADS_ABOVE_LINE) roadsAbove.setElevation(slider.valueAsNumber);
   });
   panel.append(readout, slider);
 });

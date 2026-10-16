@@ -17,7 +17,8 @@ browser (see "Verifying changes").
 ## Stack
 
 - Plain JavaScript ES modules, no framework, no TypeScript.
-- MapLibre GL JS 6.x, maplibre-contour 0.1.x, Vite 8. `package.json` pins exact versions.
+- MapLibre GL JS 6.x, maplibre-contour 0.1.x, earcut 3.x (also a MapLibre dependency),
+  Vite 8. `package.json` pins exact versions.
 - All runtime data comes from keyless public services: Mapterhorn (elevation) and
   OpenFreeMap (vector tiles and fonts). Don't add services that need an API key without
   asking the user.
@@ -31,9 +32,15 @@ browser (see "Verifying changes").
 - `src/roads-above.js`: `createRoadsAboveHighlight()`, which samples DEM tiles along roads
   and fills the `roads-above` GeoJSON source.
 - `src/print-area.js`: `createPrintArea()`, the 3D print rectangle (MapLibre markers as
-  handles), the `#print-panel` form, and the STL download. Fills the `print-area` source.
+  handles), the `#print-panel` form, and the STL and ZIP downloads. Fills the
+  `print-area` source.
 - `src/terrain-stl.js`: pure helpers for the print export: DEM tile loading, grid
-  sampling, and the binary STL writer.
+  sampling, `buildBands()` (the model as solids between horizontal cuts), and the
+  binary STL writer.
+- `src/zip.js`: a minimal ZIP writer using the browser's `CompressionStream`.
+- `src/settings.js`: `load()` / `save()` of UI state in localStorage, under flat keys
+  (`switch.<id>`, `contour.<id>`, `print.<input name>`, `print.bounds`, `terrain`,
+  `view`). Validate what you load: stored values can be stale or from an older version.
 
 Style layer order, bottom to top: `background`, `hillshade`, `road-casing`,
 `roads-above-edge`, `roads-above`, `road`, `contour-1`, `contour-2`, `print-area-mask`,
@@ -70,9 +77,12 @@ Style layer order, bottom to top: `background`, `hillshade`, `road-casing`,
    `new Map()`. Use `map.once('style.load', ...)`, which fires before the first frame is
    drawn, so the initial state doesn't flash. Don't gate on `isStyleLoaded()`: it also
    waits for sources.
-9. **Switch state lives in the HTML.** The initial state is the checkbox's `checked`
-   attribute in `index.html`, and is applied on `style.load`. `autocomplete="off"` stops
-   the browser restoring a stale checked state across reloads.
+9. **Initial UI state: saved, else the HTML.** A switch starts as last saved, else as
+   its `checked` attribute in `index.html`, and is applied on `style.load`. The same goes
+   for the print panel's inputs and their `value`. `autocomplete="off"` stops the
+   browser restoring form state on its own. Values the style needs at creation (contour
+   heights, terrain, the view) are read before `new Map()`. A URL hash beats the saved
+   view, so shared links still work.
 10. **Line layers also stroke polygon outlines.** Road filters match `['geometry-type']`
     against both `LineString` and `MultiLineString`.
 11. **OpenMapTiles road access is coarse.** The `access` field only has `'no'` (folded
@@ -88,10 +98,18 @@ Style layer order, bottom to top: `background`, `hillshade`, `road-casing`,
     `loadDem()` then drops to a lower zoom for the whole rectangle rather than mixing
     zooms, which would leave a step in the model. These fetches run in the
     maplibre-contour worker, so they don't show in the page's network log.
-14. **STL output must stay a closed solid.** Every edge must be shared by exactly two
-    triangles with opposite winding, or slicers report errors and repair the mesh. The
-    walls follow the grid's perimeter points and the bottom is a fan around its center
-    for that reason. Recheck after changing `buildStl()`.
+14. **Every STL part must stay a closed solid.** Every edge must be shared by exactly two
+    triangles with opposite winding, or slicers report errors and repair the mesh. So
+    crossing points are computed once per grid edge and level and shared by all faces,
+    and the walls use every perimeter point. Earcut drops collinear points (all those
+    along the perimeter), so `flatFace()` splits its triangles at the skipped points.
+    Recheck after changing `buildBands()`: count unmatched directed edges per part, and
+    compare the parts' summed volume with the uncut model's.
+15. **Keep vertices off the cuts by moving the vertices, not the cuts.** A vertex exactly
+    on a cut gives zero-length edges. `separateLevels()` moves vertex heights within
+    0.01 mm of a cut out to 0.01 mm. Moving the cut instead runs it off the model: a
+    fine grid has thousands of vertex heights per mm. Never step to exactly
+    `vertex + gap` either: rounding can leave it just short, which looped forever.
 
 ## Verifying changes
 

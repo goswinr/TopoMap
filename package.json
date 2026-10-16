@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "earcut": "3.2.4",
     "maplibre-contour": "0.1.1",
     "maplibre-gl": "6.12.0"
   },

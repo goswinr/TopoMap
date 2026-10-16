@@ -5,6 +5,7 @@ import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import mlcontour from 'maplibre-contour'; // default export only
 import { createRoadsAboveHighlight } from './roads-above.js';
 import { createPrintArea } from './print-area.js';
+import { load, loadNumber, save } from './settings.js';
 
 maplibregl.setWorkerUrl(workerUrl);
 
@@ -23,10 +24,17 @@ const SLIDER_TICK = 100;
 const SLIDER_MAJOR_TICK = 500; // drawn bold; minor ticks hide on short screens
 
 // One line layer and one slider per entry, all sharing the same contour tiles.
+// `name` labels the line's part in the 3D print export. `elevation` is the default;
+// the last slider position, if saved, replaces it below.
 const CONTOUR_LINES = [
-  { id: 'contour-1', color: '#c1121f', elevation: 2500 },
-  { id: 'contour-2', color: '#1d4ed8', elevation: 1500 },
+  { id: 'contour-1', name: 'red', color: '#c1121f', elevation: 2500 },
+  { id: 'contour-2', name: 'blue', color: '#1d4ed8', elevation: 1500 },
 ];
+for (const line of CONTOUR_LINES) {
+  // Snapped onto the generated contour steps, which the layer filters match exactly.
+  const saved = Math.round(loadNumber(`contour.${line.id}`, line.elevation) / CONTOUR_STEP) * CONTOUR_STEP;
+  line.elevation = Math.min(Math.max(saved, SLIDER_MIN), SLIDER_MAX);
+}
 
 // Roads above this line's elevation can be highlighted.
 const ROADS_ABOVE_LINE = CONTOUR_LINES[1]; // blue
@@ -99,13 +107,17 @@ const contourDem = new mlcontour.DemSource({
 });
 contourDem.setupMaplibre(maplibregl);
 
+// The view lives in the URL hash, so links keep it. Without a hash, reopen the last
+// view, or else the Matterhorn.
+const START_VIEW = { center: [7.6586, 45.9763], zoom: 12.5, pitch: 60, bearing: -120 };
+const savedView = location.hash ? undefined : load('view');
+const isView = (v) =>
+  [v?.center?.[0], v?.center?.[1], v?.zoom, v?.pitch, v?.bearing].every(Number.isFinite);
+
 const map = new maplibregl.Map({
   container: 'map',
   hash: true, // keep the view in the URL so it survives reloads
-  center: [7.6586, 45.9763], // Matterhorn
-  zoom: 12.5,
-  pitch: 60,
-  bearing: -120,
+  ...(isView(savedView) ? savedView : START_VIEW),
   style: {
     version: 8,
     glyphs: OPENFREEMAP_GLYPHS,
@@ -274,10 +286,16 @@ const map = new maplibregl.Map({
         paint: { 'text-color': '#2b1d0e', ...labelHalo },
       },
     ],
-    terrain: { source: 'terrain', exaggeration: 1 },
+    // 3D terrain unless it was switched off last time (TerrainControl).
+    ...(load('terrain') === false ? {} : { terrain: { source: 'terrain', exaggeration: 1 } }),
     sky: {},
   },
 });
+
+map.on('moveend', () => {
+  save('view', { center: map.getCenter().toArray(), zoom: map.getZoom(), pitch: map.getPitch(), bearing: map.getBearing() });
+});
+map.on('terrain', () => save('terrain', Boolean(map.getTerrain())));
 
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }));
 map.addControl(new maplibregl.TerrainControl({ source: 'terrain', exaggeration: 1 }));
@@ -313,7 +331,8 @@ function setLayerVisible(layerId, on) {
   map.setLayoutProperty(layerId, 'visibility', on ? 'visible' : 'none');
 }
 
-// Toggle switches. Their initial state is the checkboxes' `checked` in index.html.
+// Toggle switches. Their initial state is the last one used, or else the checkboxes'
+// `checked` in index.html.
 const TOGGLES = {
   'toggle-places': (on) => setLayerVisible('place-labels', on),
   'toggle-summits': (on) => setLayerVisible('summit-labels', on),
@@ -334,7 +353,12 @@ const TOGGLES = {
 
 for (const [inputId, apply] of Object.entries(TOGGLES)) {
   const input = document.getElementById(inputId);
-  input.addEventListener('change', () => apply(input.checked));
+  const saved = load(`switch.${inputId}`);
+  if (typeof saved === 'boolean') input.checked = saved;
+  input.addEventListener('change', () => {
+    apply(input.checked);
+    save(`switch.${inputId}`, input.checked);
+  });
 }
 // style.load fires before the first frame is drawn, so the initial state doesn't flash.
 map.once('style.load', () => {
@@ -377,6 +401,7 @@ CONTOUR_LINES.forEach((line, i) => {
     map.setFilter(line.id, contourFilter(slider.valueAsNumber));
     if (line === ROADS_ABOVE_LINE) roadsAbove.setElevation(slider.valueAsNumber);
     printArea.setContourElevation(line.id, slider.valueAsNumber);
+    save(`contour.${line.id}`, slider.valueAsNumber);
   });
   panel.append(readout, slider);
 });

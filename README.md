@@ -22,11 +22,14 @@ light up when they climb above a chosen height.
   - **Summits**: peak names with their elevation (off by default).
   - **Roads above blue line**: roads above the blue line's height get a thick yellow
     outline, and all other roads turn grey (on by default).
-  - **3D print**: pick a rectangle on the map and download its terrain as an STL file
-    for a slicer such as Bambu Studio (off by default). See [3D print export](#3d-print-export).
+  - **3D print**: pick a rectangle on the map and download its terrain as STL for a
+    slicer such as Bambu Studio, optionally with the contour lines as separate parts to
+    print in their own colours (off by default). See [3D print export](#3d-print-export).
 
 The current view is kept in the URL (`#zoom/lat/lng/bearing/pitch`), so a reload keeps
-your place and a link opens the same view.
+your place and a link opens the same view. All other settings (switches, contour heights,
+3D terrain on or off, the 3D print panel and area) are remembered in the browser's local
+storage, and so is the last view, which is used when the URL has none.
 
 ## Running it
 
@@ -89,19 +92,31 @@ underneath it.
 
 The **3D print** switch puts a north-up rectangle on the map. Drag its corner handles to
 resize it, and the center handle to move it. The panel sets the model's longest side, a
-height exaggeration and the base thickness below the lowest point, and shows the
-resulting model size and scale.
+height exaggeration, the base thickness below the lowest point and the contour line
+height, and shows the resulting model size and scale. There are two downloads:
+
+- **STL, one colour**: the whole model as one STL.
+- **ZIP, coloured lines**: the model cut horizontally at each contour line and one line
+  thickness above it. The slices are the lines (`contour-1500m-blue.stl` and so on), the
+  rest is `terrain.stl`, plus a `README.txt` with the steps below. Each layer of the print
+  then has a single colour, so the printer changes filament only at the lines.
+
+To print the coloured lines in Bambu Studio, import all STL files from the ZIP at once,
+answer Yes to "Load these files as a single object with multiple parts?", and pick a
+filament for each part in the object list. The parts share coordinates, so they line up.
+Set the layer height to the line height (0.2 mm by default): the slicer slices each
+layer at its middle, so a line exactly one layer high always prints as exactly one layer,
+wherever it starts. With a larger layer height a line can be skipped. A line shows on the
+surface where the terrain crosses its height: wide on gentle slopes, narrow on steep ones
+(a 0.2 mm line is 0.2 mm wide at 45° and 1.1 mm at 10°).
 
 [src/print-area.js](src/print-area.js) samples the terrain on a 0.3 mm grid of the print
 (`GRID_MM`, at most `MAX_GRID` samples per side), from the highest-resolution elevation
-tiles that cover the whole rectangle. [src/terrain-stl.js](src/terrain-stl.js) turns the
-samples into a closed solid (terrain, four walls and a flat bottom) and writes it as
-binary STL in millimeters, with north pointing to the back of the bed. A 150 mm square
-is about 25 MB.
-
-The panel also lists the print height of each contour line. In the slicer, add a
-filament change (or a pause) at the layer at that height, and the terrain above the line
-prints in another colour. In Bambu Studio, do this in the preview's layer slider.
+tiles that cover the whole rectangle. [src/terrain-stl.js](src/terrain-stl.js) builds
+closed solids from the samples (terrain, walls, and flat faces at the bottom and at each
+cut) and writes them as binary STL in millimeters, with north pointing to the back of the
+bed. The flat cut faces are triangulated with [earcut](https://github.com/mapbox/earcut).
+A 150 mm square is about 25 MB of STL, and the ZIP about half that.
 
 ### What counts as a public road
 
@@ -116,8 +131,10 @@ tiles don't carry more specific tags such as "no motor vehicles", so car-free st
 index.html          page markup, slider and switch styles (all CSS lives here)
 src/main.js         map setup: data sources, style layers, sliders, switches
 src/roads-above.js  elevation sampling for the "roads above blue line" highlight
-src/print-area.js   3D print area: map handles, export panel, STL download
-src/terrain-stl.js  elevation grid sampling and STL writing for the 3D print export
+src/print-area.js   3D print area: map handles, export panel, downloads
+src/terrain-stl.js  elevation grid sampling, solids cut at heights, STL writing
+src/zip.js          ZIP writer for the coloured-lines download
+src/settings.js     remembers the UI state in localStorage
 ```
 
 ## Customizing
@@ -146,6 +163,6 @@ data per view at 10 m, against about 0.7 MB at 100 m.
   tiles by [OpenFreeMap](https://openfreemap.org/), schema © OpenMapTiles.
 - [MapLibre GL JS](https://github.com/maplibre/maplibre-gl-js) and
   [maplibre-contour](https://github.com/onthegomap/maplibre-contour) are BSD-3-Clause;
-  [Vite](https://vite.dev/) is MIT.
+  [earcut](https://github.com/mapbox/earcut) is ISC; [Vite](https://vite.dev/) is MIT.
 
 The map shows the required data credits in its bottom-right corner automatically.

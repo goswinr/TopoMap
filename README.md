@@ -22,6 +22,8 @@ light up when they climb above a chosen height.
   - **Summits**: peak names with their elevation (off by default).
   - **Roads above blue line**: roads above the blue line's height get a thick yellow
     outline, and all other roads turn grey (on by default).
+  - **3D print**: pick a rectangle on the map and download its terrain as an STL file
+    for a slicer such as Bambu Studio (off by default). See [3D print export](#3d-print-export).
 
 The current view is kept in the URL (`#zoom/lat/lng/bearing/pitch`), so a reload keeps
 your place and a link opens the same view.
@@ -83,6 +85,24 @@ Moving the blue slider only re-cuts the stored samples, so the highlight follows
 Tunnels are skipped, since they run below the surface. A bridge counts as the ground
 underneath it.
 
+### 3D print export
+
+The **3D print** switch puts a north-up rectangle on the map. Drag its corner handles to
+resize it, and the center handle to move it. The panel sets the model's longest side, a
+height exaggeration and the base thickness below the lowest point, and shows the
+resulting model size and scale.
+
+[src/print-area.js](src/print-area.js) samples the terrain on a 0.3 mm grid of the print
+(`GRID_MM`, at most `MAX_GRID` samples per side), from the highest-resolution elevation
+tiles that cover the whole rectangle. [src/terrain-stl.js](src/terrain-stl.js) turns the
+samples into a closed solid (terrain, four walls and a flat bottom) and writes it as
+binary STL in millimeters, with north pointing to the back of the bed. A 150 mm square
+is about 25 MB.
+
+The panel also lists the print height of each contour line. In the slicer, add a
+filament change (or a pause) at the layer at that height, and the terrain above the line
+prints in another colour. In Bambu Studio, do this in the preview's layer slider.
+
 ### What counts as a public road
 
 Motorways, trunk, primary, secondary, tertiary, minor and service roads, minus anything
@@ -96,6 +116,8 @@ tiles don't carry more specific tags such as "no motor vehicles", so car-free st
 index.html          page markup, slider and switch styles (all CSS lives here)
 src/main.js         map setup: data sources, style layers, sliders, switches
 src/roads-above.js  elevation sampling for the "roads above blue line" highlight
+src/print-area.js   3D print area: map handles, export panel, STL download
+src/terrain-stl.js  elevation grid sampling and STL writing for the 3D print export
 ```
 
 ## Customizing

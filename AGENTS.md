@@ -30,10 +30,14 @@ browser (see "Verifying changes").
   the switch handlers (`TOGGLES`) and the sliders.
 - `src/roads-above.js`: `createRoadsAboveHighlight()`, which samples DEM tiles along roads
   and fills the `roads-above` GeoJSON source.
+- `src/print-area.js`: `createPrintArea()`, the 3D print rectangle (MapLibre markers as
+  handles), the `#print-panel` form, and the STL download. Fills the `print-area` source.
+- `src/terrain-stl.js`: pure helpers for the print export: DEM tile loading, grid
+  sampling, and the binary STL writer.
 
 Style layer order, bottom to top: `background`, `hillshade`, `road-casing`,
-`roads-above-edge`, `roads-above`, `road`, `contour-1`, `contour-2`, `place-labels`,
-`summit-labels`.
+`roads-above-edge`, `roads-above`, `road`, `contour-1`, `contour-2`, `print-area-mask`,
+`print-area-outline`, `place-labels`, `summit-labels`.
 
 ## Pitfalls already hit
 
@@ -78,6 +82,16 @@ Style layer order, bottom to top: `background`, `hillshade`, `road-casing`,
     `writing-mode: vertical-lr; direction: rtl` (minimum at the bottom). Tick labels are
     positioned against the thumb's travel range using `--thumb`. 100 m labels are hidden
     at `max-height: 900px`, because below that they overlap.
+
+13. **`DemSource.getDemTile()` ignores `maxzoom`.** It fetches the zoom you ask for, so
+    the print export can read the z13–17 tiles. Above z12 a missing tile is a 404, and
+    `loadDem()` then drops to a lower zoom for the whole rectangle rather than mixing
+    zooms, which would leave a step in the model. These fetches run in the
+    maplibre-contour worker, so they don't show in the page's network log.
+14. **STL output must stay a closed solid.** Every edge must be shared by exactly two
+    triangles with opposite winding, or slicers report errors and repair the mesh. The
+    walls follow the grid's perimeter points and the bottom is a fan around its center
+    for that reason. Recheck after changing `buildStl()`.
 
 ## Verifying changes
 

@@ -185,6 +185,100 @@
         outline: 2px solid #222;
         outline-offset: 2px;
       }
+
+      /* 3D print panel, below the switches. */
+      #print-panel {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        width: 230px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: var(--label-bg);
+        font-size: 13px;
+      }
+      #print-panel[hidden] {
+        display: none;
+      }
+      #print-panel p {
+        margin: 0;
+        color: #444;
+      }
+      .print-field {
+        display: grid;
+        grid-template-columns: 1fr 64px 2.2em;
+        align-items: center;
+        gap: 6px;
+      }
+      .print-field input {
+        width: 100%;
+        box-sizing: border-box;
+        font: inherit;
+        font-variant-numeric: tabular-nums;
+      }
+      .print-stats {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 2px 10px;
+        margin: 0;
+        font-variant-numeric: tabular-nums;
+      }
+      .print-stats dt {
+        color: #444;
+      }
+      .print-stats dd {
+        margin: 0;
+      }
+      .print-colors ul {
+        margin: 4px 0 0;
+        padding: 0;
+        list-style: none;
+        font-variant-numeric: tabular-nums;
+      }
+      .print-colors li::before {
+        content: '';
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        margin-right: 6px;
+        border-radius: 50%;
+        background: var(--accent);
+      }
+      #print-panel button {
+        padding: 6px 10px;
+        border: 0;
+        border-radius: 6px;
+        background: #222;
+        color: #fff;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      #print-panel button:disabled {
+        background: #999;
+        cursor: default;
+      }
+
+      /* Print area handles: corners resize, the center one moves the area. */
+      .print-handle {
+        box-sizing: border-box;
+        width: 18px;
+        height: 18px;
+        border: 3px solid #111;
+        border-radius: 50%;
+        background: #fff;
+        box-shadow: 0 1px 3px rgb(0 0 0 / 0.5);
+        cursor: grab;
+      }
+      .print-handle.move {
+        width: 28px;
+        height: 28px;
+        background:
+          linear-gradient(#111 0 0) center / 12px 2px no-repeat,
+          linear-gradient(#111 0 0) center / 2px 12px no-repeat,
+          #fff;
+        cursor: move;
+      }
     </style>
   </head>
   <body>
@@ -203,6 +297,32 @@
         <input type="checkbox" role="switch" id="toggle-roads-above" autocomplete="off" checked />
         Roads above blue line
       </label>
+      <label class="toggle">
+        <input type="checkbox" role="switch" id="toggle-print" autocomplete="off" />
+        3D print
+      </label>
+      <!-- Filled and shown by createPrintArea while the 3D print switch is on. -->
+      <form id="print-panel" autocomplete="off" hidden>
+        <p class="print-hint">Drag the handles to choose the area.</p>
+        <label class="print-field">
+          <span>Longest side</span>
+          <input name="size" type="number" min="20" max="350" step="10" value="150" />
+          <span>mm</span>
+        </label>
+        <label class="print-field">
+          <span>Height scale</span>
+          <input name="exaggeration" type="number" min="0.5" max="5" step="0.25" value="1" />
+          <span>×</span>
+        </label>
+        <label class="print-field">
+          <span>Base</span>
+          <input name="base" type="number" min="0.5" max="20" step="0.5" value="3" />
+          <span>mm</span>
+        </label>
+        <dl class="print-stats"></dl>
+        <div class="print-colors"></div>
+        <button name="download" type="button" disabled>Download STL</button>
+      </form>
     </div>
     <div id="contour-panel">
       <div id="contour-ticks" aria-hidden="true"></div>

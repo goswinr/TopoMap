@@ -4,6 +4,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import mlcontour from 'maplibre-contour'; // default export only
 import { createRoadsAboveHighlight } from './roads-above.js';
+import { createPrintArea } from './print-area.js';
 
 maplibregl.setWorkerUrl(workerUrl);
 
@@ -115,6 +116,7 @@ const map = new maplibregl.Map({
       dem: { type: 'raster-dem', url: MAPTERHORN_TILEJSON },
       openmaptiles: { type: 'vector', url: OPENFREEMAP_TILEJSON },
       'roads-above': { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
+      'print-area': { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
       contours: {
         type: 'vector',
         tiles: [
@@ -207,6 +209,23 @@ const map = new maplibregl.Map({
           'line-width': 3,
         },
       })),
+      // 3D print area (filled by createPrintArea): the outside shaded, and an outline.
+      {
+        id: 'print-area-mask',
+        type: 'fill',
+        source: 'print-area',
+        filter: ['==', ['geometry-type'], 'Polygon'],
+        layout: { visibility: 'none' },
+        paint: { 'fill-color': '#000000', 'fill-opacity': 0.3 },
+      },
+      {
+        id: 'print-area-outline',
+        type: 'line',
+        source: 'print-area',
+        filter: ['==', ['geometry-type'], 'LineString'],
+        layout: { visibility: 'none', 'line-join': 'round' },
+        paint: { 'line-color': '#111111', 'line-width': 2 },
+      },
       {
         id: 'place-labels',
         type: 'symbol',
@@ -283,6 +302,13 @@ const roadsAbove = createRoadsAboveHighlight(map, {
   elevation: ROADS_ABOVE_LINE.elevation,
 });
 
+const printArea = createPrintArea(map, {
+  demSource: contourDem,
+  sourceId: 'print-area',
+  form: document.getElementById('print-panel'),
+  contours: CONTOUR_LINES,
+});
+
 function setLayerVisible(layerId, on) {
   map.setLayoutProperty(layerId, 'visibility', on ? 'visible' : 'none');
 }
@@ -298,6 +324,11 @@ const TOGGLES = {
     setLayerVisible('roads-above-edge', on);
     setLayerVisible('roads-above', on);
     roadsAbove.setEnabled(on);
+  },
+  'toggle-print': (on) => {
+    setLayerVisible('print-area-mask', on);
+    setLayerVisible('print-area-outline', on);
+    printArea.setEnabled(on);
   },
 };
 
@@ -345,6 +376,7 @@ CONTOUR_LINES.forEach((line, i) => {
     readout.textContent = `${slider.value} m`;
     map.setFilter(line.id, contourFilter(slider.valueAsNumber));
     if (line === ROADS_ABOVE_LINE) roadsAbove.setElevation(slider.valueAsNumber);
+    printArea.setContourElevation(line.id, slider.valueAsNumber);
   });
   panel.append(readout, slider);
 });

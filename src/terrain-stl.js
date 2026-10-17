@@ -14,6 +14,11 @@ const MAX_DEM_ZOOM = 17;
 // Smallest distance (mm) between a cut and any vertex height, far below print
 // precision but well above float32 rounding in the STL.
 const LEVEL_GAP = 0.01;
+// Smallest land value (grid cells) at a vertex, so the shore never runs through one.
+const SHORE_GAP = 0.05;
+// A point counts as on a segment when its distance from it is below this fraction of
+// the segment's length: far above rounding, far below the spacing of the points.
+const ON_EDGE = 1e-9;
 
 /** Ground meters per world unit at the rectangle's center latitude. */
 export function metersPerWorldUnit({ y0, y1 }) {
@@ -107,14 +112,62 @@ export function sampleGrid(dem, bounds, nx, ny) {
   return { grid, min, max };
 }
 
+/** A land value kept off zero, so the shore never runs through a vertex. */
+function offShore(l) {
+  return l < 0 ? Math.min(l, -SHORE_GAP) : Math.max(l, SHORE_GAP);
+}
+
+/** Where the shore crosses the edge between land values lu and lv, from 0 at u to 1 at v. */
+function shoreAt(lu, lv) {
+  return lu / (lu - lv);
+}
+
+/**
+ * The lowest and highest elevation on land, as buildBands() cuts it: the vertices on
+ * land, and the shore points where the edges between land and sea cross it.
+ * @param {Float32Array} grid elevations, as for buildBands()
+ * @param {Float32Array} land land values, as for buildBands()
+ * @returns {{min: number, max: number}} min > max if there is no land
+ */
+export function landRange(grid, land, nx, ny) {
+  let min = Infinity;
+  let max = -Infinity;
+  const shore = (u, v) => {
+    const lu = offShore(land[u]);
+    const lv = offShore(land[v]);
+    if (lu > 0 === lv > 0) return;
+    const ele = grid[u] + shoreAt(lu, lv) * (grid[v] - grid[u]);
+    if (ele < min) min = ele; // never above both ends, so never the max
+  };
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const v = j * nx + i;
+      if (offShore(land[v]) > 0) {
+        if (grid[v] < min) min = grid[v];
+        if (grid[v] > max) max = grid[v];
+      }
+      // The triangles' edges east, south and south-east of v.
+      if (i + 1 < nx) shore(v, v + 1);
+      if (j + 1 < ny) shore(v, v + nx);
+      if (i + 1 < nx && j + 1 < ny) shore(v, v + nx + 1);
+    }
+  }
+  return { min, max };
+}
+
 /**
  * Builds the model as closed solids stacked between horizontal cuts, so a slicer can
  * load them as parts of one object and print each in its own filament. Band k holds
  * the model between heights levels[k] and levels[k + 1] (the last band has no top),
  * with the terrain on top, the side walls, and flat faces at its cuts. Neighboring
  * bands share their cut faces exactly and never overlap.
+ *
+ * With `land`, the model is also cut vertically at the shore, where `land` crosses
+ * zero between two vertices, and keeps only the land. The walls then follow the shore.
  * @param {object} options
  * @param {Float32Array} options.grid elevations in meters, row by row from the north edge
+ * @param {Float32Array} [options.land] per grid vertex, positive on land and negative
+ *   at sea, such as its signed distance to the shore; the whole area is land without it
  * @param {number} options.nx samples per row
  * @param {number} options.ny rows
  * @param {number} options.width model width in mm (west to east)
@@ -124,7 +177,7 @@ export function sampleGrid(dem, bounds, nx, ny) {
  * @returns {Float32Array[]} per band, its triangles as x, y, z of three vertices each,
  *   counter-clockwise seen from outside
  */
-export function buildBands({ grid, nx, ny, width, depth, toZ, levels }) {
+export function buildBands({ grid, land, nx, ny, width, depth, toZ, levels }) {
   const n = nx * ny;
   const dx = width / (nx - 1);
   const dy = depth / (ny - 1);
@@ -140,14 +193,76 @@ export function buildBands({ grid, nx, ny, width, depth, toZ, levels }) {
       Z[v] = toZ(grid[v]);
     }
   }
-  levels = separateLevels(levels, Z);
+  levels = spaceLevels(levels);
+  keepOffLevels(levels, Z);
+  const L = land && Float64Array.from(land, offShore);
+  const onLand = L ? (v) => L[v] > 0 : () => true;
 
-  // Each cell is two triangles, counter-clockwise seen from above.
-  const tris = new Int32Array(6 * (nx - 1) * (ny - 1));
-  for (let j = 0, t = 0; j < ny - 1; j++) {
-    for (let i = 0; i < nx - 1; i++, t += 6) {
+  // Points are grid vertex indices below n, and shore points and cut crossings from
+  // n on. Each is computed once per edge (and level), so all faces meeting there
+  // share it exactly.
+  const cx = [];
+  const cy = [];
+  const cz = [];
+  function addPoint(x, y, z) {
+    cx.push(x);
+    cy.push(y);
+    cz.push(z);
+    return n + cx.length - 1;
+  }
+  const px = (p) => (p < n ? X[p] : cx[p - n]);
+  const py = (p) => (p < n ? Y[p] : cy[p - n]);
+  const pz = (p) => (p < n ? Z[p] : cz[p - n]);
+
+  // Where the shore crosses grid edge u-v, with the terrain's height there.
+  const shores = new Map();
+  function shore(u, v) {
+    if (u > v) [u, v] = [v, u];
+    let p = shores.get(u * n + v);
+    if (p === undefined) {
+      const f = shoreAt(L[u], L[v]);
+      p = addPoint(X[u] + f * (X[v] - X[u]), Y[u] + f * (Y[v] - Y[u]), Z[u] + f * (Z[v] - Z[u]));
+      shores.set(u * n + v, p);
+    }
+    return p;
+  }
+
+  // The footprint: each cell's two triangles, counter-clockwise seen from above, cut
+  // at the shore to the convex polygon on land. Polygon t is points pp[ps[t]] up to
+  // pp[ps[t + 1]] (exclusive), with lowest and highest point zLo[t] and zHi[t].
+  const maxPolys = 2 * (nx - 1) * (ny - 1);
+  const pp = new Int32Array(4 * maxPolys); // a triangle cut by a line keeps at most 4 corners
+  const ps = new Int32Array(maxPolys + 1);
+  let polys = 0;
+  // Its outline as segments from[b] -> to[b] with the land on their left: the parts
+  // of the perimeter on land, and the shore through each polygon.
+  const from = [];
+  const to = [];
+  function addPolygon(a, b, c) {
+    const start = ps[polys];
+    let end = start;
+    for (const [u, v] of [[a, b], [b, c], [c, a]]) {
+      if (onLand(u)) pp[end++] = u;
+      if (onLand(u) !== onLand(v)) pp[end++] = shore(u, v);
+    }
+    if (end - start < 3) return; // at sea
+    ps[++polys] = end;
+    // The two shore points (the only points from n on so far) are neighbors, and
+    // the edge between them is the shore.
+    for (let m = start; m < end; m++) {
+      const p = pp[m];
+      const q = pp[m + 1 < end ? m + 1 : start];
+      if (p >= n && q >= n) {
+        from.push(p);
+        to.push(q);
+      }
+    }
+  }
+  for (let j = 0; j < ny - 1; j++) {
+    for (let i = 0; i < nx - 1; i++) {
       const nw = j * nx + i;
-      tris.set([nw, nw + nx, nw + nx + 1, nw, nw + nx + 1, nw + 1], t);
+      addPolygon(nw, nw + nx, nw + nx + 1);
+      addPolygon(nw, nw + nx + 1, nw + 1);
     }
   }
   // Perimeter vertices, counter-clockwise seen from above, starting south-west.
@@ -156,41 +271,52 @@ export function buildBands({ grid, nx, ny, width, depth, toZ, levels }) {
   for (let j = ny - 1; j > 0; j--) ring.push(j * nx + nx - 1);
   for (let i = nx - 1; i > 0; i--) ring.push(i);
   for (let j = 0; j < ny - 1; j++) ring.push(j * nx);
+  for (let e = 0; e < ring.length; e++) {
+    const u = ring[e];
+    const v = ring[(e + 1) % ring.length];
+    if (!onLand(u) && !onLand(v)) continue;
+    from.push(onLand(u) ? u : shore(u, v));
+    to.push(onLand(v) ? v : shore(u, v));
+  }
+  keepOffLevels(levels, cz); // the shore points
+  const zLo = new Float64Array(polys);
+  const zHi = new Float64Array(polys);
+  for (let t = 0; t < polys; t++) {
+    zLo[t] = Infinity;
+    zHi[t] = -Infinity;
+    for (let m = ps[t]; m < ps[t + 1]; m++) {
+      zLo[t] = Math.min(zLo[t], pz(pp[m]));
+      zHi[t] = Math.max(zHi[t], pz(pp[m]));
+    }
+  }
 
-  // Points are grid vertex indices below n, and cut crossings from n on. A crossing is
-  // computed once per grid edge and level, so all faces meeting there share it exactly.
-  const cx = [];
-  const cy = [];
-  const cz = [];
+  // Edges only run between the points so far: vertices and shore points.
+  const edgeEnds = n + cx.length;
   const crossings = levels.map(() => new Map());
   function crossing(u, v, k) {
     if (u > v) [u, v] = [v, u];
-    let p = crossings[k].get(u * n + v);
+    let p = crossings[k].get(u * edgeEnds + v);
     if (p === undefined) {
-      const f = (levels[k] - Z[u]) / (Z[v] - Z[u]);
-      p = n + cx.length;
-      cx.push(X[u] + f * (X[v] - X[u]));
-      cy.push(Y[u] + f * (Y[v] - Y[u]));
-      cz.push(levels[k]);
-      crossings[k].set(u * n + v, p);
+      const f = (levels[k] - pz(u)) / (pz(v) - pz(u));
+      p = addPoint(px(u) + f * (px(v) - px(u)), py(u) + f * (py(v) - py(u)), levels[k]);
+      crossings[k].set(u * edgeEnds + v, p);
     }
     return p;
   }
-  const px = (p) => (p < n ? X[p] : cx[p - n]);
-  const py = (p) => (p < n ? Y[p] : cy[p - n]);
-  const pz = (p) => (p < n ? Z[p] : cz[p - n]);
 
   // Where edge u -> v crosses level k and level k + 1 (if any), in order from u.
   function edgeCrossings(u, v, k) {
     const lo = levels[k];
     const hi = levels[k + 1] ?? Infinity;
+    const zu = pz(u);
+    const zv = pz(v);
     const out = [];
-    if (Z[u] < Z[v]) {
-      if (Z[u] < lo && lo < Z[v]) out.push(crossing(u, v, k));
-      if (Z[u] < hi && hi < Z[v]) out.push(crossing(u, v, k + 1));
+    if (zu < zv) {
+      if (zu < lo && lo < zv) out.push(crossing(u, v, k));
+      if (zu < hi && hi < zv) out.push(crossing(u, v, k + 1));
     } else {
-      if (Z[v] < hi && hi < Z[u]) out.push(crossing(u, v, k + 1));
-      if (Z[v] < lo && lo < Z[u]) out.push(crossing(u, v, k));
+      if (zv < hi && hi < zu) out.push(crossing(u, v, k + 1));
+      if (zv < lo && lo < zu) out.push(crossing(u, v, k));
     }
     return out;
   }
@@ -202,27 +328,26 @@ export function buildBands({ grid, nx, ny, width, depth, toZ, levels }) {
     const out = [];
     const add = (a, za, b, zb, c, zc) => out.push(px(a), py(a), za, px(b), py(b), zb, px(c), py(c), zc);
 
-    // Terrain between the cuts: each triangle clipped to lo < z < hi, a convex polygon.
-    for (let t = 0; t < tris.length; t += 3) {
-      const z0 = Z[tris[t]], z1 = Z[tris[t + 1]], z2 = Z[tris[t + 2]];
-      if (Math.max(z0, z1, z2) < lo || Math.min(z0, z1, z2) > hi) continue; // the cut faces cover it
+    // Terrain between the cuts: each polygon clipped to lo < z < hi, still convex.
+    for (let t = 0; t < polys; t++) {
+      if (zHi[t] < lo || zLo[t] > hi) continue; // the cut faces cover it
       const poly = [];
-      for (let e = 0; e < 3; e++) {
-        const u = tris[t + e];
-        if (Z[u] > lo && Z[u] < hi) poly.push(u);
-        poly.push(...edgeCrossings(u, tris[t + ((e + 1) % 3)], k));
+      for (let m = ps[t]; m < ps[t + 1]; m++) {
+        const u = pp[m];
+        if (pz(u) > lo && pz(u) < hi) poly.push(u);
+        poly.push(...edgeCrossings(u, pp[m + 1 < ps[t + 1] ? m + 1 : ps[t]], k));
       }
       for (let m = 1; m < poly.length - 1; m++) {
         add(poly[0], pz(poly[0]), poly[m], pz(poly[m]), poly[m + 1], pz(poly[m + 1]));
       }
     }
 
-    // Walls: along each perimeter edge, from lo up to the terrain, capped at hi. The
+    // Walls: along each outline segment, from lo up to the terrain, capped at hi. The
     // outline is convex, with a zero-height tip where the terrain crosses lo.
-    for (let e = 0; e < ring.length; e++) {
-      const u = ring[e];
-      const v = ring[(e + 1) % ring.length];
-      const along = [...(Z[u] > lo ? [u] : []), ...edgeCrossings(u, v, k), ...(Z[v] > lo ? [v] : [])];
+    for (let b = 0; b < from.length; b++) {
+      const u = from[b];
+      const v = to[b];
+      const along = [...(pz(u) > lo ? [u] : []), ...edgeCrossings(u, v, k), ...(pz(v) > lo ? [v] : [])];
       if (along.length < 2) continue;
       const outline = [[along[0], lo], [along.at(-1), lo]];
       for (let m = along.length - 1; m >= 0; m--) {
@@ -245,25 +370,26 @@ export function buildBands({ grid, nx, ny, width, depth, toZ, levels }) {
   function flatFace(k) {
     const level = levels[k];
     // Boundary of the region with the region on its left: a contour piece in each
-    // triangle the level crosses, and the parts of the perimeter above the level.
+    // polygon the level crosses, and the parts of the outline above the level.
     const next = new Map();
-    for (let t = 0; t < tris.length; t += 3) {
+    for (let t = 0; t < polys; t++) {
+      if (zHi[t] < level || zLo[t] > level) continue;
       let exit = -1;
       let entry = -1;
-      for (let e = 0; e < 3; e++) {
-        const u = tris[t + e];
-        const v = tris[t + ((e + 1) % 3)];
-        if (Z[u] > level && Z[v] < level) exit = crossing(u, v, k);
-        else if (Z[u] < level && Z[v] > level) entry = crossing(u, v, k);
+      for (let m = ps[t]; m < ps[t + 1]; m++) {
+        const u = pp[m];
+        const v = pp[m + 1 < ps[t + 1] ? m + 1 : ps[t]];
+        if (pz(u) > level && pz(v) < level) exit = crossing(u, v, k);
+        else if (pz(u) < level && pz(v) > level) entry = crossing(u, v, k);
       }
       if (exit >= 0) next.set(exit, entry);
     }
-    for (let e = 0; e < ring.length; e++) {
-      const u = ring[e];
-      const v = ring[(e + 1) % ring.length];
-      if (Z[u] > level && Z[v] > level) next.set(u, v);
-      else if (Z[u] > level) next.set(u, crossing(u, v, k));
-      else if (Z[v] > level) next.set(crossing(u, v, k), v);
+    for (let b = 0; b < from.length; b++) {
+      const u = from[b];
+      const v = to[b];
+      if (pz(u) > level && pz(v) > level) next.set(u, v);
+      else if (pz(u) > level) next.set(u, crossing(u, v, k));
+      else if (pz(v) > level) next.set(crossing(u, v, k), v);
     }
 
     // Chain the boundary into rings: counter-clockwise outlines and clockwise holes.
@@ -299,46 +425,58 @@ export function buildBands({ grid, nx, ny, width, depth, toZ, levels }) {
       const coords = ids.flatMap((p) => [px(p), py(p)]);
       const starts = [];
       for (let r = 0, s = 0; r < rings.length; s += rings[r++].length) starts.push(s);
-      const where = rings.flatMap((points, r) => points.map((_, i) => [r, i]));
+      const succ = new Int32Array(ids.length); // the next point on the same ring
+      rings.forEach((points, r) => points.forEach((_, i) => (succ[starts[r] + i] = starts[r] + ((i + 1) % points.length))));
 
-      // Earcut drops collinear boundary points, such as those along the perimeter,
-      // but the walls and the terrain next to the face use them. Split each triangle
-      // at the points it skipped, so every edge is shared by exactly two triangles.
-      const skippedOn = (i, j) => {
-        const [r, a] = where[i];
-        const [rj, b] = where[j];
-        if (r !== rj) return [];
-        const len = rings[r].length;
-        for (const [from, steps, reverse] of [[a, (b - a + len) % len, false], [b, (a - b + len) % len, true]]) {
-          const skipped = [];
-          for (let s = 1; s < steps; s++) {
-            const m = starts[r] + ((from + s) % len);
-            if (cross(coords, i, m, j) !== 0) break; // a diagonal, not a boundary edge
-            skipped.push(m);
-          }
-          if (steps > 1 && skipped.length === steps - 1) return reverse ? skipped.reverse() : skipped;
-        }
-        return [];
-      };
-      const emit = (a, b, c) => {
-        for (const [p, q, o] of [[a, b, c], [b, c, a], [c, a, b]]) {
-          const skipped = skippedOn(p, q);
-          if (skipped.length) {
-            let prev = p;
-            for (const m of [...skipped, q]) {
-              emit(prev, m, o);
-              prev = m;
-            }
-            return;
-          }
-        }
-        face.push([ids[a], ids[b], ids[c]]);
-      };
       const triangles = earcut(coords, starts.slice(1));
+      // Earcut's triangles all wind the same way; make them counter-clockwise.
+      let area = 0;
+      for (let t = 0; t < triangles.length; t += 3) area += cross(coords, triangles[t], triangles[t + 1], triangles[t + 2]);
+      if (area < 0) {
+        for (let t = 0; t < triangles.length; t += 3) [triangles[t + 1], triangles[t + 2]] = [triangles[t + 2], triangles[t + 1]];
+      }
+
+      // Earcut drops boundary points on straight stretches, such as those along the
+      // perimeter, but the walls and the terrain next to the face use them. So a
+      // triangle edge with no triangle on its other side, which lies on the boundary,
+      // must be a ring edge, or else is split at the points it passes. They are found
+      // by position: earcut may drop a point where it bridges a hole to the outline,
+      // and then the point is on another ring than the edge's ends.
+      const edges = new Set();
+      for (let t = 0; t < triangles.length; t += 3) {
+        for (let e = 0; e < 3; e++) edges.add(triangles[t + e] * ids.length + triangles[t + ((e + 1) % 3)]);
+      }
+      const skippedOn = (p, q) => {
+        if (succ[p] === q || edges.has(q * ids.length + p)) return [];
+        const ex = coords[2 * q] - coords[2 * p];
+        const ey = coords[2 * q + 1] - coords[2 * p + 1];
+        const len2 = ex * ex + ey * ey;
+        const on = [];
+        for (let m = 0; m < ids.length; m++) {
+          const mx = coords[2 * m] - coords[2 * p];
+          const my = coords[2 * m + 1] - coords[2 * p + 1];
+          const t = (mx * ex + my * ey) / len2;
+          if (t > 0 && t < 1 && Math.abs(mx * ey - my * ex) <= ON_EDGE * len2) on.push([t, m]);
+        }
+        return on.sort((a, b) => a[0] - b[0]).map(([, m]) => m);
+      };
+      // Triangle a, b, c with the points skipped on each edge: a fan from the corner
+      // opposite an edge with skipped points, and the same for the other edges.
+      const emit = (a, b, c, ab, bc, ca) => {
+        if (!ab.length) {
+          if (bc.length) emit(b, c, a, bc, ca, ab);
+          else if (ca.length) emit(c, a, b, ca, ab, bc);
+          else face.push([ids[a], ids[b], ids[c]]);
+          return;
+        }
+        const along = [a, ...ab, b];
+        for (let s = 0; s + 1 < along.length; s++) {
+          emit(along[s], along[s + 1], c, [], s + 2 === along.length ? bc : [], s ? [] : ca);
+        }
+      };
       for (let t = 0; t < triangles.length; t += 3) {
         const [a, b, c] = triangles.slice(t, t + 3);
-        if (cross(coords, a, b, c) > 0) emit(a, b, c);
-        else emit(a, c, b);
+        emit(a, b, c, skippedOn(a, b), skippedOn(b, c), skippedOn(c, a));
       }
     }
     return face;
@@ -373,23 +511,31 @@ function cross(coords, a, b, c) {
 }
 
 /**
- * Keeps vertices off the cuts: spaces the cuts at least 3 × LEVEL_GAP apart, then
- * moves any vertex height closer than LEVEL_GAP to a cut out to that distance. Then
- * every crossing point is distinct from the vertices around it. (Moving the cuts
- * instead doesn't work: a fine grid has thousands of vertex heights per mm.)
- * @param {number[]} levels cut heights
- * @param {Float64Array} Z vertex heights, changed in place
+ * Spaces the cuts at least 3 × LEVEL_GAP apart, so keepOffLevels() can move a vertex
+ * off one cut without moving it onto the next.
+ * @param {number[]} levels ascending cut heights
  * @returns {number[]} the spaced cut heights
  */
-function separateLevels(levels, Z) {
+function spaceLevels(levels) {
   const out = [];
   for (const level of levels) out.push(out.length ? Math.max(level, out.at(-1) + 3 * LEVEL_GAP) : level);
+  return out;
+}
+
+/**
+ * Keeps vertices off the cuts: moves any vertex height closer than LEVEL_GAP to a cut
+ * out to that distance. Then every crossing point is distinct from the vertices around
+ * it. (Moving the cuts instead doesn't work: a fine grid has thousands of vertex
+ * heights per mm.)
+ * @param {number[]} levels cut heights, from spaceLevels()
+ * @param {Float64Array | number[]} Z vertex heights, changed in place
+ */
+function keepOffLevels(levels, Z) {
   for (let v = 0; v < Z.length; v++) {
-    for (const l of out) {
+    for (const l of levels) {
       if (Math.abs(Z[v] - l) < LEVEL_GAP) Z[v] = Z[v] < l ? l - LEVEL_GAP : l + LEVEL_GAP;
     }
   }
-  return out;
 }
 
 /**

@@ -1,13 +1,15 @@
 // 3D print export: a north-up rectangle with draggable handles on the map, and a
 // panel that turns the terrain inside it into STL files for a slicer: either one
 // STL, or a ZIP with the contour lines as separate parts for their own filaments.
+// Where the rectangle reaches the sea, the model can end at the coastline.
 //
 // The rectangle is kept in Web Mercator world units ([0, 1], y down). Its terrain
-// is sampled when the rectangle or the model size changes, so the panel can show
-// the model's real heights, including where each contour line ends up.
+// and sea are sampled when the rectangle or the model size changes, so the panel
+// can show the model's real heights, including where each contour line ends up.
 
 import * as maplibregl from 'maplibre-gl';
-import { buildBands, demZoomFor, loadDem, metersPerWorldUnit, sampleGrid, writeStl } from './terrain-stl.js';
+import { buildBands, demZoomFor, landRange, loadDem, metersPerWorldUnit, sampleGrid, writeStl } from './terrain-stl.js';
+import { SHORE_REACH, landField, loadSea } from './coast.js';
 import { load, loadNumber, save } from './settings.js';
 import { zip } from './zip.js';
 
@@ -16,7 +18,9 @@ const MAX_GRID = 800; // samples per side, caps the STL near 1.3M triangles (64 
 const MIN_SIDE_MM = 5;
 const START_SIZE = 0.4; // side of a new rectangle, as a fraction of the smaller map side
 const UPDATE_DELAY_MS = 300;
+// At most 80 ASCII characters; the coastline comes from OpenStreetMap.
 const STL_HEADER = 'TopoMap terrain, elevation (c) Mapterhorn, mapterhorn.com/attribution';
+const STL_HEADER_COAST = 'TopoMap terrain (c) Mapterhorn, coastline (c) OpenStreetMap contributors';
 
 // Corner handles in order NW, NE, SE, SW: corner k ^ 2 is opposite corner k,
 // k ^ 1 shares its north/south edge and 3 - k its west/east edge.
@@ -26,21 +30,28 @@ const cornerOf = ({ x0, y0, x1, y1 }, k) => [k === 1 || k === 2 ? x1 : x0, k >= 
  * @param {import('maplibre-gl').Map} map
  * @param {object} options
  * @param {object} options.demSource maplibre-contour DemSource to read elevations from
+ * @param {object} options.sea where the sea polygons are, see loadSea()
  * @param {string} options.sourceId GeoJSON source that receives the rectangle
  * @param {HTMLFormElement} options.form the export panel
  */
-export function createPrintArea(map, { demSource, sourceId, form }) {
+export function createPrintArea(map, { demSource, sea, sourceId, form }) {
   const inputs = form.elements;
   // The panel's last values; readNumber() clamps stale ones to each input's range.
   for (const input of form.querySelectorAll('input[name]')) {
-    const saved = loadNumber(`print.${input.name}`);
-    if (saved !== undefined) input.value = saved;
+    const saved = load(`print.${input.name}`);
+    if (input.type === 'checkbox') {
+      if (typeof saved === 'boolean') input.checked = saved;
+    } else if (typeof saved === 'number' && Number.isFinite(saved)) {
+      input.value = saved;
+    }
   }
   const stats = form.querySelector('.print-stats');
   const colors = form.querySelector('.print-colors');
   let contours = { lines: [] }; // see setContours()
   let bounds = null;
-  let model = null; // the sampled terrain: { bounds, nx, ny, grid, min, max, demZoom }
+  // The sampled area: { bounds, nx, ny, demZoom, grid, min, max }, and where the sea is:
+  // { land, seaShare, landMin, landMax } (land is null without sea), or seaError.
+  let model = null;
   let status = '';
   let enabled = false;
   let generation = 0;
@@ -121,7 +132,8 @@ export function createPrintArea(map, { demSource, sourceId, form }) {
     timer = setTimeout(update, UPDATE_DELAY_MS);
   }
 
-  // Sample the terrain on the print grid, at the DEM zoom that resolves it.
+  // Sample the terrain on the print grid, at the DEM zoom that resolves it, and the
+  // sea from vector tiles of about the same resolution.
   async function update() {
     const gen = generation;
     const b = bounds;
@@ -137,10 +149,24 @@ export function createPrintArea(map, { demSource, sourceId, form }) {
     const spacing = span / Math.min(Math.ceil(size / GRID_MM), MAX_GRID - 1);
     const nx = Math.max(2, Math.round(spanX / spacing) + 1);
     const ny = Math.max(2, Math.round(spanY / spacing) + 1);
+    const demZoom = demZoomFor(spacing);
     try {
-      const dem = await loadDem(demSource, b, demZoomFor(spacing));
+      const [dem, seaTiles] = await Promise.all([
+        loadDem(demSource, b, demZoom),
+        // Without the sea the model still works, just not cut at the coastline.
+        loadSea(sea, b, demZoom, (SHORE_REACH + 1) * spacing).catch((err) => err),
+      ]);
       if (gen !== generation) return;
-      model = { bounds: b, nx, ny, demZoom: dem.z, ...sampleGrid(dem, b, nx, ny) };
+      model = { bounds: b, nx, ny, demZoom: dem.z, ...sampleGrid(dem, b, nx, ny), land: null };
+      if (seaTiles instanceof Error) {
+        model.seaError = seaTiles.message;
+      } else {
+        const coast = landField(seaTiles, b, nx, ny);
+        if (coast) {
+          const { min, max } = landRange(model.grid, coast.land, nx, ny);
+          Object.assign(model, { land: coast.land, seaShare: coast.seaShare, landMin: min, landMax: max });
+        }
+      }
     } catch (err) {
       if (gen !== generation) return;
       status = err.message;
@@ -148,9 +174,15 @@ export function createPrintArea(map, { demSource, sourceId, form }) {
     render();
   }
 
-  /** Model dimensions in mm for the current inputs. */
+  /**
+   * The terrain to print, and the model's dimensions in mm for the current inputs.
+   * The terrain is cut at the coastline if there's sea and the panel asks for it.
+   */
   function measure() {
-    const { bounds: b, min, max } = model;
+    const cut = Boolean(model.land) && inputs.coast.checked;
+    const { bounds: b, grid } = model;
+    const min = cut ? model.landMin : model.min;
+    const max = cut ? model.landMax : model.max;
     const metersPerUnit = metersPerWorldUnit(b);
     const widthM = (b.x1 - b.x0) * metersPerUnit;
     const depthM = (b.y1 - b.y0) * metersPerUnit;
@@ -158,6 +190,10 @@ export function createPrintArea(map, { demSource, sourceId, form }) {
     const zPerM = mmPerM * readNumber(inputs.exaggeration);
     const base = readNumber(inputs.base);
     return {
+      grid,
+      land: cut ? model.land : null,
+      min,
+      max,
       widthM,
       depthM,
       width: widthM * mmPerM,
@@ -171,11 +207,11 @@ export function createPrintArea(map, { demSource, sourceId, form }) {
   }
 
   /** The contour lines to print, lowest first; lines every N meters only inside the model. */
-  function printLines() {
+  function printLines(m) {
     if (!contours.every) return [...contours.lines].sort((a, b) => a.elevation - b.elevation);
     const { every, name, color } = contours;
     const lines = [];
-    for (let ele = (Math.floor(model.min / every) + 1) * every; ele < model.max; ele += every) {
+    for (let ele = (Math.floor(m.min / every) + 1) * every; ele < m.max; ele += every) {
       lines.push({ name, color, elevation: ele });
     }
     return lines;
@@ -188,8 +224,8 @@ export function createPrintArea(map, { demSource, sourceId, form }) {
   function lineSlices(m) {
     const thickness = readNumber(inputs.line);
     const slices = [];
-    for (const line of printLines()) {
-      if (line.elevation <= model.min || line.elevation >= model.max) continue;
+    for (const line of printLines(m)) {
+      if (line.elevation <= m.min || line.elevation >= m.max) continue;
       const z = m.toZ(line.elevation);
       const lo = Math.max(z, slices.at(-1)?.hi ?? 0);
       if (z + thickness > lo) slices.push({ line, lo, hi: z + thickness });
@@ -198,21 +234,31 @@ export function createPrintArea(map, { demSource, sourceId, form }) {
   }
 
   function render() {
-    inputs.download.disabled = !model;
+    const m = model && measure();
+    // Without land (all sea, cut off at the coastline) there's nothing to print.
+    const empty = !m || !(m.max >= m.min);
+    inputs.download.disabled = empty;
     inputs.downloadParts.disabled = true;
-    if (!model) {
-      stats.replaceChildren(Object.assign(document.createElement('dt'), { textContent: status }));
+    if (empty) {
+      const text = m ? 'No land in this area.' : status;
+      stats.replaceChildren(Object.assign(document.createElement('dt'), { textContent: text }));
       colors.replaceChildren();
       return;
     }
-    const m = measure();
     const mm = (v) => v.toFixed(0);
+    let seaRow = '';
+    if (model.seaError) seaRow = '<dt>Sea</dt><dd>coastline didn’t load</dd>';
+    else if (model.land) {
+      const percent = Math.max(1, Math.round(model.seaShare * 100));
+      seaRow = `<dt>Sea</dt><dd>${percent}% of the area${m.land ? ', cut off' : ''}</dd>`;
+    }
     stats.innerHTML = `
       <dt>Area</dt><dd>${(m.widthM / 1000).toFixed(2)} × ${(m.depthM / 1000).toFixed(2)} km</dd>
       <dt>Model</dt><dd>${mm(m.width)} × ${mm(m.depth)} × ${mm(m.height)} mm</dd>
       <dt>Scale</dt><dd>1:${Math.round(m.scale).toLocaleString('en')}</dd>
-      <dt>Elevation</dt><dd>${Math.round(model.min)}–${Math.round(model.max)} m</dd>
-      <dt>Terrain data</dt><dd>${m.demPixel.toFixed(1)} m grid</dd>`;
+      <dt>Elevation</dt><dd>${Math.round(m.min)}–${Math.round(m.max)} m</dd>
+      <dt>Terrain data</dt><dd>${m.demPixel.toFixed(1)} m grid</dd>
+      ${seaRow}`;
     const slices = lineSlices(m);
     let rows;
     if (contours.every) {
@@ -225,9 +271,9 @@ export function createPrintArea(map, { demSource, sourceId, form }) {
       const tooClose = n > 1 && every * m.zPerM < readNumber(inputs.line) ? ', closer than the line height' : '';
       rows = [`<li style="--accent: ${color}">Every ${every} m: ${where}${tooClose}</li>`];
     } else {
-      rows = printLines().map((line) => {
+      rows = printLines(m).map((line) => {
         const slice = slices.find((s) => s.line === line);
-        const inside = line.elevation > model.min && line.elevation < model.max;
+        const inside = line.elevation > m.min && line.elevation < m.max;
         const where = slice
           ? `<b>${slice.lo.toFixed(2)}–${slice.hi.toFixed(2)} mm</b>`
           : inside ? 'same height as the line below' : 'not in area';
@@ -257,10 +303,12 @@ export function createPrintArea(map, { demSource, sourceId, form }) {
   // The whole model as one STL, for a single filament.
   function downloadStl() {
     return busy(inputs.download, (m) => {
-      const stl = writeStl(buildBands({ ...model, ...m, levels: [0] }), STL_HEADER);
+      const stl = writeStl(buildBands({ ...model, ...m, levels: [0] }), stlHeader(m));
       saveFile(new Blob([stl], { type: 'model/stl' }), `${fileName()}.stl`);
     });
   }
+
+  const stlHeader = (m) => (m.land ? STL_HEADER_COAST : STL_HEADER);
 
   // The model cut below and above each contour line: one STL for the terrain and one
   // per line (or one for all lines every N meters), which a slicer loads as parts of
@@ -287,7 +335,7 @@ export function createPrintArea(map, { demSource, sourceId, form }) {
         { name: 'terrain.stl', meshes: bands.filter((_, k) => !owners[k]) },
         ...lineFiles.map((name) => ({ name, meshes: bands.filter((_, k) => owners[k] && sliceFile(owners[k]) === name) })),
       ];
-      const files = parts.map(({ name, meshes }) => ({ name, data: new Uint8Array(writeStl(meshes, STL_HEADER)) }));
+      const files = parts.map(({ name, meshes }) => ({ name, data: new Uint8Array(writeStl(meshes, stlHeader(m))) }));
       files.push({ name: 'README.txt', data: new TextEncoder().encode(readme(m, slices)) });
       saveFile(await zip(files), `${fileName()}.zip`);
     });
@@ -307,6 +355,7 @@ export function createPrintArea(map, { demSource, sourceId, form }) {
       'TopoMap terrain model',
       `Center ${center.lat.toFixed(5)}, ${center.lng.toFixed(5)}, area ${(m.widthM / 1000).toFixed(2)} x ${(m.depthM / 1000).toFixed(2)} km`,
       `Model ${m.width.toFixed(0)} x ${m.depth.toFixed(0)} x ${m.height.toFixed(0)} mm, scale 1:${Math.round(m.scale)}, height scale ${readNumber(inputs.exaggeration)}`,
+      ...(m.land ? ['Cut off at the coastline, so only the land is printed.'] : []),
       '',
       'Parts:',
       `  ${'terrain.stl'.padEnd(pad)}the terrain, in your main filament`,
@@ -321,6 +370,7 @@ export function createPrintArea(map, { demSource, sourceId, form }) {
       'The parts line up because they share coordinates.',
       '',
       'Elevation data: Mapterhorn and its sources, https://mapterhorn.com/attribution',
+      ...(m.land ? ['Coastline: (c) OpenStreetMap contributors, https://www.openstreetmap.org/copyright'] : []),
       '',
     ].join('\n');
   }
@@ -332,8 +382,10 @@ export function createPrintArea(map, { demSource, sourceId, form }) {
 
   form.addEventListener('submit', (e) => e.preventDefault());
   form.addEventListener('input', (e) => {
-    if (Number.isFinite(e.target.valueAsNumber)) save(`print.${e.target.name}`, e.target.valueAsNumber);
-    // Only the model size changes the sampling grid; the rest just rescales heights.
+    if (e.target.type === 'checkbox') save(`print.${e.target.name}`, e.target.checked);
+    else if (Number.isFinite(e.target.valueAsNumber)) save(`print.${e.target.name}`, e.target.valueAsNumber);
+    // Only the model size changes the sampling grid; the rest just rescales heights or
+    // picks the terrain with or without the sea, both already sampled.
     if (e.target === inputs.size) scheduleUpdate();
     else if (model) render();
   });

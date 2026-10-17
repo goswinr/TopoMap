@@ -17,8 +17,9 @@ browser (see "Verifying changes").
 ## Stack
 
 - Plain JavaScript ES modules, no framework, no TypeScript.
-- MapLibre GL JS 6.x, maplibre-contour 0.1.x, earcut 3.x (also a MapLibre dependency),
-  Vite 8. `package.json` pins exact versions.
+- MapLibre GL JS 6.x, maplibre-contour 0.1.x, Vite 8. earcut 3.x, @mapbox/vector-tile 3.x
+  and pbf 5.x are MapLibre dependencies too; keep them at the versions MapLibre uses, so
+  there's one copy of each. `package.json` pins exact versions.
 - All runtime data comes from keyless public services: Mapterhorn (elevation) and
   OpenFreeMap (vector tiles and fonts). Don't add services that need an API key without
   asking the user.
@@ -34,15 +35,18 @@ browser (see "Verifying changes").
 - `src/print-area.js`: `createPrintArea()`, the 3D print rectangle (MapLibre markers as
   handles), the `#print-panel` form, and the STL and ZIP downloads. Fills the
   `print-area` source.
+- `src/coast.js`: `loadSea()` fetches and decodes the OpenFreeMap vector tiles under the
+  print rectangle and keeps the sea polygons (`SEA_CLASSES` in `main.js`); `landField()`
+  turns them into each grid vertex's signed distance to the shore, in grid cells.
 - `src/terrain-stl.js`: pure helpers for the print export: DEM tile loading, grid
-  sampling, `buildBands()` (the model as solids between horizontal cuts), and the
-  binary STL writer.
+  sampling, `buildBands()` (the model as solids between horizontal cuts, optionally cut
+  off at the shore), `landRange()`, and the binary STL writer.
 - `src/zip.js`: a minimal ZIP writer using the browser's `CompressionStream`.
 - `src/settings.js`: `load()` / `save()` of UI state in localStorage, under flat keys
   (`switch.<id>`, `contour.<id>`, `contour.mode`, `contour.every`, `print.<input name>`,
   `print.bounds`, `terrain`, `view`). Validate what you load: stored values can be stale or from an older version.
 
-Style layer order, bottom to top: `background`, `hillshade`, `road-casing`,
+Style layer order, bottom to top: `background`, `hillshade`, `coastline`, `road-casing`,
 `roads-above-edge`, `roads-above`, `road`, `contour-every`, `contour-blue`, `contour-red`,
 `contour-green`, `print-area-mask`, `print-area-outline`, `place-labels`, `summit-labels`.
 
@@ -113,10 +117,27 @@ disabled.
     Recheck after changing `buildBands()`: count unmatched directed edges per part, and
     compare the parts' summed volume with the uncut model's.
 15. **Keep vertices off the cuts by moving the vertices, not the cuts.** A vertex exactly
-    on a cut gives zero-length edges. `separateLevels()` moves vertex heights within
-    0.01 mm of a cut out to 0.01 mm. Moving the cut instead runs it off the model: a
-    fine grid has thousands of vertex heights per mm. Never step to exactly
-    `vertex + gap` either: rounding can leave it just short, which looped forever.
+    on a cut gives zero-length edges. `keepOffLevels()` moves vertex heights within
+    0.01 mm of a cut out to 0.01 mm, for the grid vertices and the shore points. Moving
+    the cut instead runs it off the model: a fine grid has thousands of vertex heights
+    per mm. Never step to exactly `vertex + gap` either: rounding can leave it just
+    short, which looped forever.
+16. **The coast cut works like the height cuts, but vertical.** `land` is a value per grid
+    vertex, positive on land. Each grid triangle is clipped where it crosses zero
+    (one shore point per grid edge, shared by both triangles), and the model's outline
+    is then the perimeter on land plus the shore segment through each clipped
+    triangle. The walls and the flat faces use that outline instead of the perimeter.
+    `SHORE_GAP` keeps the shore off the vertices, like `LEVEL_GAP`. The model's lowest
+    point is `landRange()`, which includes the shore points: the sea is 0 m in the DEM,
+    so they can be lower than any land vertex. `landField()` only trusts each tile
+    inside its own square: the polygons are cut at the tile buffer, 64 units outside,
+    and those cut edges aren't coast.
+17. **Earcut drops boundary points, sometimes on another ring.** It removes points it
+    finds collinear, also right after bridging a hole to the outline, so the skipped
+    point can belong to the hole. `flatFace()` therefore treats a triangle edge with no
+    triangle on its other side as boundary, and splits it at every face point lying on
+    it, found by position (`ON_EDGE`). An exact collinearity test doesn't work: earcut's
+    rounding differs from ours on nearly straight shores.
 
 ## Verifying changes
 
@@ -128,6 +149,8 @@ disabled.
     highlight should begin exactly where the blue line crosses it.
   - `#12/46.29/7.88/0/40`: the road-dense Rhône valley near Visp, a load test for the
     highlight.
+  - `#12.5/43.74/7.42/0/0`: the coast at Monaco, for the coastline and the 3D print's
+    cut at the coast. The DEM is 0 m over the sea.
 - `map` is module-scoped, not on `window`. To inspect it in the browser, temporarily add
   `window.__dbg = { map };` and remove it afterwards. In v6 the per-source tile caches are
   internal, at `map.style.tileManagers[sourceId]` (`sourceCaches` in v5).

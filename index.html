@@ -282,6 +282,15 @@
         font: inherit;
         font-variant-numeric: tabular-nums;
       }
+      .print-check {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        cursor: pointer;
+      }
+      .print-check input {
+        margin: 0;
+      }
       .print-stats {
         display: grid;
         grid-template-columns: auto 1fr;
@@ -407,6 +416,11 @@
           <span>Line height</span>
           <input name="line" type="number" min="0.04" max="2" step="0.04" value="0.2" />
           <span>mm</span>
+        </label>
+        <!-- Where the area reaches the sea, the base ends at the coastline. -->
+        <label class="print-check">
+          <input name="coast" type="checkbox" checked />
+          Cut off at the coastline
         </label>
         <dl class="print-stats"></dl>
         <div class="print-colors"></div>

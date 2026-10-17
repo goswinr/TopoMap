@@ -19,6 +19,7 @@ every N meters), and roads that light up when they climb above a chosen height.
   multiple of 100 m, up to 1000 m). The lines are added in the order blue (1500 m), red
   (2500 m), green (3500 m); the default is two.
 - **Public roads** from OpenStreetMap.
+- **Coastline**: the outline of the sea, from OpenStreetMap.
 - **Switches** at the top left:
   - **Cities & villages**: place names (off by default).
   - **Summits**: peak names with their elevation (off by default).
@@ -27,7 +28,8 @@ every N meters), and roads that light up when they climb above a chosen height.
     is disabled with 0 lines or every N m.
   - **3D print**: pick a rectangle on the map and download its terrain as STL for a
     slicer such as Bambu Studio, optionally with the contour lines as separate parts to
-    print in their own colours (off by default). See [3D print export](#3d-print-export).
+    print in their own colours, and cut off at the coastline (off by default). See
+    [3D print export](#3d-print-export).
 
 The current view is kept in the URL (`#zoom/lat/lng/bearing/pitch`), so a reload keeps
 your place and a link opens the same view. All other settings (switches, contour heights,
@@ -58,7 +60,7 @@ The whole map is client-side. [src/main.js](src/main.js) defines the MapLibre st
 | Data | Source | Notes |
 |---|---|---|
 | Elevation | [Mapterhorn](https://mapterhorn.com/data-access/) tiles | Terrarium-encoded 512 px WebP. Global to zoom 12, up to zoom 17 where high-resolution data exists. |
-| Roads, place and summit names | [OpenFreeMap](https://openfreemap.org/) vector tiles | OpenStreetMap data in the [OpenMapTiles](https://openmaptiles.org/schema/) schema. |
+| Roads, coastline, place and summit names | [OpenFreeMap](https://openfreemap.org/) vector tiles | OpenStreetMap data in the [OpenMapTiles](https://openmaptiles.org/schema/) schema. The coastline is the outline of the `ocean` water polygons. |
 | Label fonts | OpenFreeMap | Noto Sans glyphs. |
 
 The same elevation tiles feed three things: the 3D terrain, the hillshade, and the
@@ -96,7 +98,10 @@ underneath it.
 The **3D print** switch puts a north-up rectangle on the map. Drag its corner handles to
 resize it, and the center handle to move it. The panel sets the model's longest side, a
 height exaggeration, the base thickness below the lowest point and the contour line
-height, and shows the resulting model size and scale. There are two downloads:
+height, and shows the resulting model size and scale. Where the rectangle reaches the
+sea, **Cut off at the coastline** (on by default) prints only the land: the base ends at
+the coastline instead of covering the sea as a flat plate, and islands become separate
+pieces. The panel shows how much of the area is sea. There are two downloads:
 
 - **STL, one colour**: the whole model as one STL.
 - **ZIP, coloured lines**: the model cut horizontally at each contour line and one line
@@ -116,11 +121,16 @@ surface where the terrain crosses its height: wide on gentle slopes, narrow on s
 
 [src/print-area.js](src/print-area.js) samples the terrain on a 0.3 mm grid of the print
 (`GRID_MM`, at most `MAX_GRID` samples per side), from the highest-resolution elevation
-tiles that cover the whole rectangle. [src/terrain-stl.js](src/terrain-stl.js) builds
-closed solids from the samples (terrain, walls, and flat faces at the bottom and at each
-cut) and writes them as binary STL in millimeters, with north pointing to the back of the
-bed. The flat cut faces are triangulated with [earcut](https://github.com/mapbox/earcut).
-A 150 mm square is about 25 MB of STL, and the ZIP about half that.
+tiles that cover the whole rectangle. [src/coast.js](src/coast.js) reads the sea polygons
+from the vector tiles at about the same resolution, and gives each grid point its
+distance to the shore, positive on land and negative at sea.
+[src/terrain-stl.js](src/terrain-stl.js) builds closed solids from the samples (terrain,
+walls, and flat faces at the bottom and at each cut) and writes them as binary STL in
+millimeters, with north pointing to the back of the bed. At the coast it cuts each grid
+triangle where the distance crosses zero, so the coastline runs smoothly between grid
+points and the walls follow it. The flat cut faces are triangulated with
+[earcut](https://github.com/mapbox/earcut). A 150 mm square is about 25 MB of STL, and
+the ZIP about half that.
 
 ### What counts as a public road
 
@@ -136,7 +146,8 @@ index.html          page markup, slider and switch styles (all CSS lives here)
 src/main.js         map setup: data sources, style layers, sliders, switches
 src/roads-above.js  elevation sampling for the "roads above blue line" highlight
 src/print-area.js   3D print area: map handles, export panel, downloads
-src/terrain-stl.js  elevation grid sampling, solids cut at heights, STL writing
+src/coast.js        sea polygons from the vector tiles, distance to the shore
+src/terrain-stl.js  elevation grid sampling, solids cut at heights and at the shore, STL writing
 src/zip.js          ZIP writer for the coloured-lines download
 src/settings.js     remembers the UI state in localStorage
 ```
@@ -153,6 +164,7 @@ Most settings are constants at the top of [src/main.js](src/main.js):
 | `CONTOUR_LINES` | Colour and starting height of each contour line (one slider per entry) |
 | `EVERY_LINE` | Colour of the lines every N m |
 | `ROADS_ABOVE_LINE` | Which contour line drives the road highlight |
+| `SEA_CLASSES` | Which water polygons are outlined as coastline and cut off the 3D print (add `'lake'` for lakes) |
 | `publicRoadFilter` | Which roads are shown |
 | `ROAD_COLORS`, `MUTED_ROAD_COLORS`, `ROAD_HIGHLIGHT*` | Road colours and outline widths |
 
@@ -168,6 +180,8 @@ data per view at 10 m, against about 0.7 MB at 100 m.
   tiles by [OpenFreeMap](https://openfreemap.org/), schema © OpenMapTiles.
 - [MapLibre GL JS](https://github.com/maplibre/maplibre-gl-js) and
   [maplibre-contour](https://github.com/onthegomap/maplibre-contour) are BSD-3-Clause;
-  [earcut](https://github.com/mapbox/earcut) is ISC; [Vite](https://vite.dev/) is MIT.
+  [earcut](https://github.com/mapbox/earcut) and [pbf](https://github.com/mapbox/pbf) are
+  ISC; [@mapbox/vector-tile](https://github.com/mapbox/vector-tile-js) is BSD-3-Clause;
+  [Vite](https://vite.dev/) is MIT.
 
 The map shows the required data credits in its bottom-right corner automatically.

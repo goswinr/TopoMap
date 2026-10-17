@@ -49,6 +49,10 @@ const ROADS_ABOVE_LINE = CONTOUR_LINES[0]; // blue
 const OPENFREEMAP_TILEJSON = 'https://tiles.openfreemap.org/planet';
 const OPENFREEMAP_GLYPHS = 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf';
 
+// Water polygons of these OpenMapTiles classes are the sea: their outline is drawn as
+// the coastline, and the 3D print is cut off there. Adding 'lake' would treat lakes so.
+const SEA_CLASSES = ['ocean'];
+
 const labelHalo = {
   'text-halo-color': 'rgb(255 255 255 / 0.9)',
   'text-halo-width': 2,
@@ -163,6 +167,20 @@ const map = new maplibregl.Map({
           'hillshade-highlight-color': '#ffffff',
           'hillshade-accent-color': '#000000',
           'hillshade-exaggeration': 0.6,
+        },
+      },
+      // The outline of the sea polygons. Where a polygon is cut at a tile edge, the cut
+      // runs in the tile's buffer, outside the part each tile draws, so it doesn't show.
+      {
+        id: 'coastline',
+        type: 'line',
+        source: 'openmaptiles',
+        'source-layer': 'water',
+        filter: ['match', ['get', 'class'], SEA_CLASSES, true, false],
+        layout: { 'line-join': 'round' },
+        paint: {
+          'line-color': '#0e6f8f',
+          'line-width': ['interpolate', ['linear'], ['zoom'], 6, 1, 14, 2],
         },
       },
       {
@@ -339,6 +357,7 @@ const roadsAbove = createRoadsAboveHighlight(map, {
 
 const printArea = createPrintArea(map, {
   demSource: contourDem,
+  sea: { tileJson: OPENFREEMAP_TILEJSON, layer: 'water', classes: SEA_CLASSES },
   sourceId: 'print-area',
   form: document.getElementById('print-panel'),
 });

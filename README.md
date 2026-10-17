@@ -96,7 +96,8 @@ underneath it.
 ### 3D print export
 
 The **3D print** switch puts a north-up rectangle on the map. Drag its corner handles to
-resize it, and the center handle to move it. The panel sets the model's longest side, a
+resize it, and the center handle to move it. A corner keeps the rectangle square; hold
+Ctrl or Shift while dragging it to change the proportions. The panel sets the model's longest side, a
 height exaggeration, the base thickness below the lowest point and the contour line
 height, and shows the resulting model size and scale. Where the rectangle reaches the
 sea, **Cut off at the coastline** (on by default) prints only the land: the base ends at

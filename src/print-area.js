@@ -61,21 +61,56 @@ export function createPrintArea(map, { demSource, sea, sourceId, form }) {
   const corners = [0, 1, 2, 3].map(() => new maplibregl.Marker({ element: handle('print-handle'), draggable: true }));
   const mover = new maplibregl.Marker({ element: handle('print-handle move'), draggable: true });
 
+  // A corner resizes the rectangle as a square, or freely while Ctrl or Shift is held.
+  // Marker drag events carry no key state, so it's tracked here.
+  let free = false;
+  let resize = null; // redraws the corner being dragged
+  const trackModifiers = (e) => {
+    free = e.ctrlKey || e.shiftKey;
+  };
+  window.addEventListener('pointerdown', trackModifiers, true);
+  window.addEventListener('pointermove', trackModifiers, true);
+  // A key pressed or released mid-drag reshapes the rectangle without a pointer move.
+  for (const type of ['keydown', 'keyup']) {
+    window.addEventListener(type, (e) => {
+      const was = free;
+      trackModifiers(e);
+      if (free !== was) resize?.();
+    });
+  }
+
   corners.forEach((marker, k) => {
     let anchor;
-    marker.on('dragstart', () => {
-      anchor = cornerOf(bounds, k ^ 2);
-    });
-    marker.on('drag', () => {
-      const [x, y] = toWorld(marker.getLngLat());
+    let pointer;
+    function reshape() {
+      let [x, y] = pointer;
+      if (!free) {
+        // The corner on the anchor's diagonal nearest the pointer.
+        const dx = x - anchor[0];
+        const dy = y - anchor[1];
+        const side = (Math.abs(dx) + Math.abs(dy)) / 2;
+        x = anchor[0] + (dx < 0 ? -side : side);
+        y = anchor[1] + (dy < 0 ? -side : side);
+      }
       setBounds({ x0: x, y0: y, x1: anchor[0], y1: anchor[1] });
-      // Keep the dragged handle under the pointer even if it crosses the opposite corner.
+      // Place the handles from the dragged corner, not from bounds: if it crossed the
+      // opposite corner, bounds has swapped them.
+      marker.setLngLat(toLngLat(x, y));
       corners[k ^ 1].setLngLat(toLngLat(anchor[0], y));
       corners[3 - k].setLngLat(toLngLat(x, anchor[1]));
       corners[k ^ 2].setLngLat(toLngLat(...anchor));
       mover.setLngLat(toLngLat((x + anchor[0]) / 2, (y + anchor[1]) / 2));
+    }
+    marker.on('dragstart', () => {
+      anchor = cornerOf(bounds, k ^ 2);
+      resize = reshape;
+    });
+    marker.on('drag', () => {
+      pointer = toWorld(marker.getLngLat());
+      reshape();
     });
     marker.on('dragend', () => {
+      resize = null;
       placeHandles();
       scheduleUpdate();
     });

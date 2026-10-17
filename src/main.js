@@ -24,11 +24,13 @@ const SLIDER_TICK = 100;
 const SLIDER_MAJOR_TICK = 500; // drawn bold; minor ticks hide on short screens
 
 // One line layer and one slider per entry, all sharing the same contour tiles.
-// `name` labels the line's part in the 3D print export. `elevation` is the default;
-// the last slider position, if saved, replaces it below.
+// With fewer lines chosen, the first ones show; blue comes first because the road
+// highlight follows it. `name` labels the line's part in the 3D print export.
+// `elevation` is the default; the last slider position, if saved, replaces it below.
 const CONTOUR_LINES = [
-  { id: 'contour-1', name: 'red', color: '#c1121f', elevation: 2500 },
-  { id: 'contour-2', name: 'blue', color: '#1d4ed8', elevation: 1500 },
+  { id: 'contour-blue', name: 'blue', color: '#1d4ed8', elevation: 1500 },
+  { id: 'contour-red', name: 'red', color: '#c1121f', elevation: 2500 },
+  { id: 'contour-green', name: 'green', color: '#15803d', elevation: 3500 },
 ];
 for (const line of CONTOUR_LINES) {
   // Snapped onto the generated contour steps, which the layer filters match exactly.
@@ -36,8 +38,11 @@ for (const line of CONTOUR_LINES) {
   line.elevation = Math.min(Math.max(saved, SLIDER_MIN), SLIDER_MAX);
 }
 
+// Instead of the lines above: one line every N meters, all in this colour.
+const EVERY_LINE = { id: 'contour-every', name: 'brown', color: '#7c4a1d' };
+
 // Roads above this line's elevation can be highlighted.
-const ROADS_ABOVE_LINE = CONTOUR_LINES[1]; // blue
+const ROADS_ABOVE_LINE = CONTOUR_LINES[0]; // blue
 
 // Roads and labels: OpenStreetMap vector tiles (OpenMapTiles schema) and fonts
 // from OpenFreeMap, free and keyless.
@@ -209,13 +214,25 @@ const map = new maplibregl.Map({
           'line-opacity': roadOpacity,
         },
       },
+      // Contour lines; applyContourMode() shows the chosen ones.
+      {
+        id: EVERY_LINE.id,
+        type: 'line',
+        source: 'contours',
+        'source-layer': 'contours',
+        layout: { visibility: 'none', 'line-join': 'round' },
+        paint: {
+          'line-color': EVERY_LINE.color,
+          'line-width': 1.5,
+        },
+      },
       ...CONTOUR_LINES.map((line) => ({
         id: line.id,
         type: 'line',
         source: 'contours',
         'source-layer': 'contours',
         filter: contourFilter(line.elevation),
-        layout: { 'line-join': 'round' },
+        layout: { visibility: 'none', 'line-join': 'round' },
         paint: {
           'line-color': line.color,
           'line-width': 3,
@@ -324,7 +341,6 @@ const printArea = createPrintArea(map, {
   demSource: contourDem,
   sourceId: 'print-area',
   form: document.getElementById('print-panel'),
-  contours: CONTOUR_LINES,
 });
 
 function setLayerVisible(layerId, on) {
@@ -337,6 +353,7 @@ const TOGGLES = {
   'toggle-places': (on) => setLayerVisible('place-labels', on),
   'toggle-summits': (on) => setLayerVisible('summit-labels', on),
   'toggle-roads-above': (on) => {
+    on &&= shownLines().includes(ROADS_ABOVE_LINE); // only while its line is on the map
     const colors = on ? MUTED_ROAD_COLORS : ROAD_COLORS;
     map.setPaintProperty('road', 'line-color', colors.fill);
     map.setPaintProperty('road-casing', 'line-color', colors.casing);
@@ -362,6 +379,7 @@ for (const [inputId, apply] of Object.entries(TOGGLES)) {
 }
 // style.load fires before the first frame is drawn, so the initial state doesn't flash.
 map.once('style.load', () => {
+  applyContourMode();
   for (const [inputId, apply] of Object.entries(TOGGLES)) apply(document.getElementById(inputId).checked);
 });
 
@@ -377,7 +395,8 @@ for (let v = SLIDER_MIN; v <= SLIDER_MAX; v += SLIDER_TICK) {
   ticks.append(tick);
 }
 
-CONTOUR_LINES.forEach((line, i) => {
+// Built once per line; applyContourMode() puts the shown ones into the panel.
+const sliders = new Map(CONTOUR_LINES.map((line) => {
   const readout = document.createElement('output');
   const slider = document.createElement('input');
   Object.assign(slider, {
@@ -388,20 +407,79 @@ CONTOUR_LINES.forEach((line, i) => {
     step: CONTOUR_STEP,
     value: line.elevation,
   });
-  slider.setAttribute('aria-label', `Contour line ${i + 1} elevation in meters`);
+  slider.setAttribute('aria-label', `Elevation of the ${line.name} contour line in meters`);
   readout.className = 'contour-value';
   readout.textContent = `${line.elevation} m`;
-  for (const el of [readout, slider]) {
-    el.style.gridColumn = i + 2; // column 1 holds the ticks
-    el.style.setProperty('--accent', line.color);
-  }
+  for (const el of [readout, slider]) el.style.setProperty('--accent', line.color);
 
   slider.addEventListener('input', () => {
-    readout.textContent = `${slider.value} m`;
-    map.setFilter(line.id, contourFilter(slider.valueAsNumber));
-    if (line === ROADS_ABOVE_LINE) roadsAbove.setElevation(slider.valueAsNumber);
-    printArea.setContourElevation(line.id, slider.valueAsNumber);
-    save(`contour.${line.id}`, slider.valueAsNumber);
+    line.elevation = slider.valueAsNumber;
+    readout.textContent = `${line.elevation} m`;
+    map.setFilter(line.id, contourFilter(line.elevation));
+    if (line === ROADS_ABOVE_LINE) roadsAbove.setElevation(line.elevation);
+    printArea.setContours(printContours());
+    save(`contour.${line.id}`, line.elevation);
   });
-  panel.append(readout, slider);
+  return [line, [readout, slider]];
+}));
+
+// Which contour lines show: the first 0-3 of CONTOUR_LINES, each with its slider, or
+// one every N meters. Initially the last choice, else the form's state in index.html.
+const modeForm = document.getElementById('contour-mode');
+const { mode: modeInput, every: everyInput } = modeForm.elements;
+const savedMode = load('contour.mode');
+if (typeof savedMode === 'string') modeInput.value = savedMode; // no-op unless a radio has it
+const savedEvery = loadNumber('contour.every');
+if (savedEvery !== undefined) everyInput.value = savedEvery;
+everyInput.value = everyMeters(); // snapped and in range
+
+/** The contour lines with a slider; none while lines every N meters show. */
+function shownLines() {
+  return modeInput.value === 'every' ? [] : CONTOUR_LINES.slice(0, Number(modeInput.value));
+}
+
+/** The interval for lines every N meters: a multiple of CONTOUR_STEP, within the input's range. */
+function everyMeters() {
+  const v = Math.round(everyInput.valueAsNumber / CONTOUR_STEP) * CONTOUR_STEP;
+  if (!Number.isFinite(v)) return Number(everyInput.defaultValue);
+  return Math.min(Math.max(v, Number(everyInput.min)), Number(everyInput.max));
+}
+
+/** The shown contour lines, as the 3D print export takes them. */
+function printContours() {
+  return modeInput.value === 'every' ? { ...EVERY_LINE, every: everyMeters() } : { lines: shownLines() };
+}
+
+function applyContourMode() {
+  const every = modeInput.value === 'every';
+  const lines = shownLines();
+  setLayerVisible(EVERY_LINE.id, every);
+  map.setFilter(EVERY_LINE.id, ['==', ['%', ['get', 'ele'], everyMeters()], 0]);
+  for (const line of CONTOUR_LINES) setLayerVisible(line.id, lines.includes(line));
+  everyInput.closest('label').hidden = !every;
+
+  // Sliders from right to left, so the first line keeps its place at the screen edge.
+  panel.hidden = !lines.length;
+  panel.replaceChildren(ticks, ...lines.flatMap((line, i) => {
+    const els = sliders.get(line);
+    for (const el of els) el.style.gridColumn = lines.length + 1 - i; // column 1 holds the ticks
+    return els;
+  }));
+
+  const roadsInput = document.getElementById('toggle-roads-above');
+  roadsInput.disabled = !lines.includes(ROADS_ABOVE_LINE);
+  roadsInput.closest('label').title = roadsInput.disabled ? 'Needs the blue contour line' : '';
+  printArea.setContours(printContours());
+}
+
+modeForm.addEventListener('submit', (e) => e.preventDefault());
+modeForm.addEventListener('input', () => {
+  applyContourMode();
+  TOGGLES['toggle-roads-above'](document.getElementById('toggle-roads-above').checked);
+  save('contour.mode', modeInput.value);
+  save('contour.every', everyMeters());
+});
+// Once typing is done, show the interval actually used.
+everyInput.addEventListener('change', () => {
+  everyInput.value = everyMeters();
 });

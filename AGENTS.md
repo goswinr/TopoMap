@@ -39,12 +39,18 @@ browser (see "Verifying changes").
   binary STL writer.
 - `src/zip.js`: a minimal ZIP writer using the browser's `CompressionStream`.
 - `src/settings.js`: `load()` / `save()` of UI state in localStorage, under flat keys
-  (`switch.<id>`, `contour.<id>`, `print.<input name>`, `print.bounds`, `terrain`,
-  `view`). Validate what you load: stored values can be stale or from an older version.
+  (`switch.<id>`, `contour.<id>`, `contour.mode`, `contour.every`, `print.<input name>`,
+  `print.bounds`, `terrain`, `view`). Validate what you load: stored values can be stale or from an older version.
 
 Style layer order, bottom to top: `background`, `hillshade`, `road-casing`,
-`roads-above-edge`, `roads-above`, `road`, `contour-1`, `contour-2`, `print-area-mask`,
-`print-area-outline`, `place-labels`, `summit-labels`.
+`roads-above-edge`, `roads-above`, `road`, `contour-every`, `contour-blue`, `contour-red`,
+`contour-green`, `print-area-mask`, `print-area-outline`, `place-labels`, `summit-labels`.
+
+The contour layers start hidden; `applyContourMode()` in `main.js` shows the ones chosen
+in `#contour-mode` (the first 0–3 of `CONTOUR_LINES`, or `contour-every`), puts their
+sliders into the panel, and passes them to the print export. `CONTOUR_LINES` starts with
+blue because the road highlight follows it: without the blue line the roads switch is
+disabled.
 
 ## Pitfalls already hit
 
@@ -60,7 +66,8 @@ Style layer order, bottom to top: `background`, `hillshade`, `road-casing`,
    Sharing one makes MapLibre warn and degrades the hillshade.
 5. **Contours are pre-generated and the sliders only filter.** maplibre-contour only emits
    multiples of a single interval (`thresholds: { 0: CONTOUR_STEP }`). Each slider sets
-   `['==', ['get', 'ele'], value]` on its layer. Regenerating tiles for every slider value
+   `['==', ['get', 'ele'], value]` on its layer, and "every N m" sets
+   `['==', ['%', ['get', 'ele'], N], 0]`, so N must be a multiple of `CONTOUR_STEP`. Regenerating tiles for every slider value
    was measured at 0.1–2 s per move, against 1–3 frames for a filter change, so keep the
    filter approach. Contour data grows roughly with 1/step: about 0.7 MB per view at
    100 m, 6–10 MB at 10 m.

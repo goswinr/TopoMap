@@ -28,10 +28,8 @@ const cornerOf = ({ x0, y0, x1, y1 }, k) => [k === 1 || k === 2 ? x1 : x0, k >= 
  * @param {object} options.demSource maplibre-contour DemSource to read elevations from
  * @param {string} options.sourceId GeoJSON source that receives the rectangle
  * @param {HTMLFormElement} options.form the export panel
- * @param {{id: string, name: string, color: string, elevation: number}[]} options.contours
- *   contour lines; `name` (e.g. 'red') goes into the part file names
  */
-export function createPrintArea(map, { demSource, sourceId, form, contours }) {
+export function createPrintArea(map, { demSource, sourceId, form }) {
   const inputs = form.elements;
   // The panel's last values; readNumber() clamps stale ones to each input's range.
   for (const input of form.querySelectorAll('input[name]')) {
@@ -40,7 +38,7 @@ export function createPrintArea(map, { demSource, sourceId, form, contours }) {
   }
   const stats = form.querySelector('.print-stats');
   const colors = form.querySelector('.print-colors');
-  const lines = contours.map(({ id, name, color, elevation }) => ({ id, name, color, elevation }));
+  let contours = { lines: [] }; // see setContours()
   let bounds = null;
   let model = null; // the sampled terrain: { bounds, nx, ny, grid, min, max, demZoom }
   let status = '';
@@ -167,8 +165,20 @@ export function createPrintArea(map, { demSource, sourceId, form, contours }) {
       height: base + (max - min) * zPerM,
       scale: 1000 / mmPerM,
       demPixel: metersPerUnit / (512 * 2 ** model.demZoom),
+      zPerM,
       toZ: (ele) => base + (ele - min) * zPerM,
     };
+  }
+
+  /** The contour lines to print, lowest first; lines every N meters only inside the model. */
+  function printLines() {
+    if (!contours.every) return [...contours.lines].sort((a, b) => a.elevation - b.elevation);
+    const { every, name, color } = contours;
+    const lines = [];
+    for (let ele = (Math.floor(model.min / every) + 1) * every; ele < model.max; ele += every) {
+      lines.push({ name, color, elevation: ele });
+    }
+    return lines;
   }
 
   /**
@@ -178,7 +188,7 @@ export function createPrintArea(map, { demSource, sourceId, form, contours }) {
   function lineSlices(m) {
     const thickness = readNumber(inputs.line);
     const slices = [];
-    for (const line of [...lines].sort((a, b) => a.elevation - b.elevation)) {
+    for (const line of printLines()) {
       if (line.elevation <= model.min || line.elevation >= model.max) continue;
       const z = m.toZ(line.elevation);
       const lo = Math.max(z, slices.at(-1)?.hi ?? 0);
@@ -204,9 +214,18 @@ export function createPrintArea(map, { demSource, sourceId, form, contours }) {
       <dt>Elevation</dt><dd>${Math.round(model.min)}–${Math.round(model.max)} m</dd>
       <dt>Terrain data</dt><dd>${m.demPixel.toFixed(1)} m grid</dd>`;
     const slices = lineSlices(m);
-    const rows = [...lines]
-      .sort((a, b) => a.elevation - b.elevation)
-      .map((line) => {
+    let rows;
+    if (contours.every) {
+      const { every, color } = contours;
+      const n = slices.length;
+      const lo = slices[0]?.line.elevation;
+      const hi = slices.at(-1)?.line.elevation;
+      const where = !n ? 'none in area' : n === 1 ? `1 line, at ${lo} m` : `${n} lines, ${lo}–${hi} m`;
+      // Then each line runs into the next, with no terrain colour between them.
+      const tooClose = n > 1 && every * m.zPerM < readNumber(inputs.line) ? ', closer than the line height' : '';
+      rows = [`<li style="--accent: ${color}">Every ${every} m: ${where}${tooClose}</li>`];
+    } else {
+      rows = printLines().map((line) => {
         const slice = slices.find((s) => s.line === line);
         const inside = line.elevation > model.min && line.elevation < model.max;
         const where = slice
@@ -214,7 +233,10 @@ export function createPrintArea(map, { demSource, sourceId, form, contours }) {
           : inside ? 'same height as the line below' : 'not in area';
         return `<li style="--accent: ${line.color}">${line.elevation} m: ${where}</li>`;
       });
-    colors.innerHTML = `<p>Contour lines, as parts in the ZIP:</p><ul>${rows.join('')}</ul>`;
+    }
+    colors.innerHTML = rows.length
+      ? `<p>Contour lines, as parts in the ZIP:</p><ul>${rows.join('')}</ul>`
+      : '<p>No contour lines chosen.</p>';
     inputs.downloadParts.disabled = !slices.length;
   }
 
@@ -241,10 +263,12 @@ export function createPrintArea(map, { demSource, sourceId, form, contours }) {
   }
 
   // The model cut below and above each contour line: one STL for the terrain and one
-  // per line, which a slicer loads as parts of one object, each with its filament.
+  // per line (or one for all lines every N meters), which a slicer loads as parts of
+  // one object, each with its filament.
   function downloadParts() {
     return busy(inputs.downloadParts, async (m) => {
       const slices = lineSlices(m);
+      if (!slices.length) return; // the lines changed meanwhile
       // Band k runs from levels[k] up to the next level, and belongs to owners[k].
       const levels = [0];
       const owners = [null]; // null: the terrain
@@ -258,9 +282,10 @@ export function createPrintArea(map, { demSource, sourceId, form, contours }) {
         owners.push(null);
       }
       const bands = buildBands({ ...model, ...m, levels });
+      const lineFiles = [...new Set(slices.map(sliceFile))];
       const parts = [
         { name: 'terrain.stl', meshes: bands.filter((_, k) => !owners[k]) },
-        ...slices.map((s) => ({ name: sliceFile(s), meshes: [bands[owners.indexOf(s)]] })),
+        ...lineFiles.map((name) => ({ name, meshes: bands.filter((_, k) => owners[k] && sliceFile(owners[k]) === name) })),
       ];
       const files = parts.map(({ name, meshes }) => ({ name, data: new Uint8Array(writeStl(meshes, STL_HEADER)) }));
       files.push({ name: 'README.txt', data: new TextEncoder().encode(readme(m, slices)) });
@@ -268,11 +293,16 @@ export function createPrintArea(map, { demSource, sourceId, form, contours }) {
     });
   }
 
-  const sliceFile = ({ line }) => `contour-${line.elevation}m-${line.name}.stl`;
+  // The part a slice goes into: its own, or the one shared by all lines every N meters.
+  const sliceFile = ({ line }) =>
+    contours.every ? `contours-every-${contours.every}m-${line.name}.stl` : `contour-${line.elevation}m-${line.name}.stl`;
 
   function readme(m, slices) {
     const center = toLngLat((model.bounds.x0 + model.bounds.x1) / 2, (model.bounds.y0 + model.bounds.y1) / 2);
-    const pad = Math.max(...slices.map((s) => sliceFile(s).length), 11) + 2;
+    const lineParts = contours.every
+      ? [[sliceFile(slices[0]), `the ${contours.every} m contour lines from ${slices[0].line.elevation} to ${slices.at(-1).line.elevation} m`]]
+      : slices.map((s) => [sliceFile(s), `${s.line.elevation} m contour line, ${s.lo.toFixed(2)} to ${s.hi.toFixed(2)} mm above the bed`]);
+    const pad = Math.max(...lineParts.map(([file]) => file.length), 11) + 2;
     return [
       'TopoMap terrain model',
       `Center ${center.lat.toFixed(5)}, ${center.lng.toFixed(5)}, area ${(m.widthM / 1000).toFixed(2)} x ${(m.depthM / 1000).toFixed(2)} km`,
@@ -280,7 +310,7 @@ export function createPrintArea(map, { demSource, sourceId, form, contours }) {
       '',
       'Parts:',
       `  ${'terrain.stl'.padEnd(pad)}the terrain, in your main filament`,
-      ...slices.map((s) => `  ${sliceFile(s).padEnd(pad)}${s.line.elevation} m contour line, ${s.lo.toFixed(2)} to ${s.hi.toFixed(2)} mm above the bed`),
+      ...lineParts.map(([file, text]) => `  ${file.padEnd(pad)}${text}`),
       '',
       'Bambu Studio:',
       '  1. Import all the .stl files at once (select them together).',
@@ -331,9 +361,13 @@ export function createPrintArea(map, { demSource, sourceId, form, contours }) {
         for (const marker of [...corners, mover]) marker.remove();
       }
     },
-    setContourElevation(id, elevation) {
-      const line = lines.find((l) => l.id === id);
-      if (line) line.elevation = elevation;
+    /**
+     * The contour lines to print: `{ lines }` with each line's `name`, `color` and
+     * `elevation`, or `{ every, name, color }` for one every `every` meters, all in
+     * one part. `name` (e.g. 'red') goes into the part file names.
+     */
+    setContours(value) {
+      contours = structuredClone(value);
       if (model) render();
     },
   };

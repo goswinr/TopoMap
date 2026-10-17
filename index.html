@@ -27,13 +27,17 @@
         top: 50%;
         transform: translateY(-50%);
         display: grid;
-        grid-template-columns: auto repeat(2, 80px);
+        grid-template-columns: auto; /* the ticks; each slider adds an 80px column */
+        grid-auto-columns: 80px;
         grid-template-rows: auto min(70vh, 100vh - 280px);
         row-gap: 10px;
         justify-items: center;
         font: 13px/1.2 system-ui, sans-serif;
         user-select: none;
         pointer-events: none;
+      }
+      #contour-panel[hidden] {
+        display: none;
       }
       .contour-value {
         grid-row: 1;
@@ -185,6 +189,68 @@
         outline: 2px solid #222;
         outline-offset: 2px;
       }
+      /* Off while its contour line isn't on the map. */
+      .toggle:has(input:disabled) {
+        color: #777;
+        cursor: default;
+      }
+      .toggle input:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+
+      /* Contour line choice: radio buttons drawn as a segmented control. */
+      #contour-mode {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0;
+        padding: 6px 10px;
+        border-radius: 8px;
+        background: var(--label-bg);
+      }
+      .segments {
+        display: flex;
+        padding: 2px;
+        border-radius: 6px;
+        background: rgb(0 0 0 / 0.1);
+      }
+      .segments label {
+        position: relative;
+        min-width: 1.4em;
+        padding: 2px 6px;
+        border-radius: 4px;
+        text-align: center;
+        cursor: pointer;
+        user-select: none;
+      }
+      .segments input {
+        position: absolute;
+        opacity: 0;
+        pointer-events: none;
+      }
+      .segments label:has(:checked) {
+        background: #222;
+        color: #fff;
+      }
+      .segments label:has(:focus-visible) {
+        outline: 2px solid #222;
+        outline-offset: 1px;
+      }
+      .contour-every {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .contour-every[hidden] {
+        display: none;
+      }
+      .contour-every input {
+        width: 64px;
+        box-sizing: border-box;
+        font: inherit;
+        font-variant-numeric: tabular-nums;
+      }
 
       /* 3D print panel, below the switches. */
       #print-panel {
@@ -293,6 +359,22 @@
         <input type="checkbox" role="switch" id="toggle-summits" autocomplete="off" />
         Summits
       </label>
+      <!-- Contour lines: 0-3 with their own sliders on the right, or one every N m.
+           The interval is snapped to multiples of CONTOUR_STEP in main.js. -->
+      <form id="contour-mode" autocomplete="off">
+        <span id="contour-mode-label">Contour lines</span>
+        <div class="segments" role="radiogroup" aria-labelledby="contour-mode-label">
+          <label><input type="radio" name="mode" value="0" />0</label>
+          <label><input type="radio" name="mode" value="1" />1</label>
+          <label><input type="radio" name="mode" value="2" checked />2</label>
+          <label><input type="radio" name="mode" value="3" />3</label>
+          <label><input type="radio" name="mode" value="every" />every</label>
+        </div>
+        <label class="contour-every" hidden>
+          <input name="every" type="number" min="100" max="1000" step="100" value="200" aria-label="Contour interval" />
+          m
+        </label>
+      </form>
       <label class="toggle">
         <input type="checkbox" role="switch" id="toggle-roads-above" autocomplete="off" checked />
         Roads above blue line

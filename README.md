@@ -8,20 +8,23 @@ https://goswinr.github.io/TopoMap/
 
 A 2D and 3D topographic web map built with [MapLibre GL JS](https://maplibre.org/) and open
 terrain data from [Mapterhorn](https://mapterhorn.com/). It opens on the Matterhorn and is
-made for exploring elevation: two contour lines you can move up and down, and roads that
-light up when they climb above a chosen height.
+made for exploring elevation: up to three contour lines you can move up and down (or one
+every N meters), and roads that light up when they climb above a chosen height.
 
 ## Features
 
 - **3D terrain** with neutral grey hillshading.
-- **Two contour lines**, red and blue, each moved by its own vertical slider on the right
-  (500–3500 m in 100 m steps). They start at 2500 m (red) and 1500 m (blue).
+- **Contour lines**, chosen at the top left: **0–3** lines, each moved by its own vertical
+  slider on the right (500–3500 m in 100 m steps), or a brown line **every N m** (a
+  multiple of 100 m, up to 1000 m). The lines are added in the order blue (1500 m), red
+  (2500 m), green (3500 m); the default is two.
 - **Public roads** from OpenStreetMap.
 - **Switches** at the top left:
   - **Cities & villages**: place names (off by default).
   - **Summits**: peak names with their elevation (off by default).
   - **Roads above blue line**: roads above the blue line's height get a thick yellow
-    outline, and all other roads turn grey (on by default).
+    outline, and all other roads turn grey (on by default). Needs the blue line, so it
+    is disabled with 0 lines or every N m.
   - **3D print**: pick a rectangle on the map and download its terrain as STL for a
     slicer such as Bambu Studio, optionally with the contour lines as separate parts to
     print in their own colours (off by default). See [3D print export](#3d-print-export).
@@ -97,8 +100,9 @@ height, and shows the resulting model size and scale. There are two downloads:
 
 - **STL, one colour**: the whole model as one STL.
 - **ZIP, coloured lines**: the model cut horizontally at each contour line and one line
-  thickness above it. The slices are the lines (`contour-1500m-blue.stl` and so on), the
-  rest is `terrain.stl`, plus a `README.txt` with the steps below. Each layer of the print
+  thickness above it. The slices are the lines (`contour-1500m-blue.stl` and so on, or
+  all of them in one `contours-every-200m-brown.stl` with every N m), the rest is
+  `terrain.stl`, plus a `README.txt` with the steps below. Each layer of the print
   then has a single colour, so the printer changes filament only at the lines.
 
 To print the coloured lines in Bambu Studio, import all STL files from the ZIP at once,
@@ -147,6 +151,7 @@ Most settings are constants at the top of [src/main.js](src/main.js):
 | `SLIDER_MIN`, `SLIDER_MAX` | Slider range |
 | `SLIDER_TICK`, `SLIDER_MAJOR_TICK` | Tick label spacing, and which labels are bold |
 | `CONTOUR_LINES` | Colour and starting height of each contour line (one slider per entry) |
+| `EVERY_LINE` | Colour of the lines every N m |
 | `ROADS_ABOVE_LINE` | Which contour line drives the road highlight |
 | `publicRoadFilter` | Which roads are shown |
 | `ROAD_COLORS`, `MUTED_ROAD_COLORS`, `ROAD_HIGHLIGHT*` | Road colours and outline widths |

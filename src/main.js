@@ -53,6 +53,13 @@ const OPENFREEMAP_GLYPHS = 'https://tiles.openfreemap.org/fonts/{fontstack}/{ran
 // the coastline, and the 3D print is cut off there. Adding 'lake' would treat lakes so.
 const SEA_CLASSES = ['ocean'];
 
+// Aerialways of these OpenMapTiles subclasses are ski lifts: shown by their switch, and
+// raised on the 3D print. Material ropeways ('goods') and zip lines are left out.
+const LIFT_CLASSES = [
+  'cable_car', 'gondola', 'mixed_lift', 'chair_lift',
+  'drag_lift', 't-bar', 'j-bar', 'platter', 'rope_tow', 'magic_carpet',
+];
+
 const labelHalo = {
   'text-halo-color': 'rgb(255 255 255 / 0.9)',
   'text-halo-width': 2,
@@ -256,6 +263,19 @@ const map = new maplibregl.Map({
           'line-width': 3,
         },
       })),
+      // Ski lifts, over the contour lines. The tiles have them from zoom 12 on.
+      {
+        id: 'ski-lifts',
+        type: 'line',
+        source: 'openmaptiles',
+        'source-layer': 'transportation',
+        filter: ['all', ['==', ['get', 'class'], 'aerialway'], ['match', ['get', 'subclass'], LIFT_CLASSES, true, false]],
+        layout: { visibility: 'none', 'line-cap': 'round' },
+        paint: {
+          'line-color': '#111111',
+          'line-width': ['interpolate', ['linear'], ['zoom'], 12, 1.5, 16, 3],
+        },
+      },
       // 3D print area (filled by createPrintArea): the outside shaded, and an outline.
       {
         id: 'print-area-mask',
@@ -358,6 +378,7 @@ const roadsAbove = createRoadsAboveHighlight(map, {
 const printArea = createPrintArea(map, {
   demSource: contourDem,
   sea: { tileJson: OPENFREEMAP_TILEJSON, layer: 'water', classes: SEA_CLASSES },
+  lifts: { tileJson: OPENFREEMAP_TILEJSON, layer: 'transportation', classes: LIFT_CLASSES },
   sourceId: 'print-area',
   form: document.getElementById('print-panel'),
 });
@@ -379,6 +400,11 @@ const TOGGLES = {
     setLayerVisible('roads-above-edge', on);
     setLayerVisible('roads-above', on);
     roadsAbove.setEnabled(on);
+  },
+  // Before the 3D print, so on load its area is sampled once, with or without lifts.
+  'toggle-lifts': (on) => {
+    setLayerVisible('ski-lifts', on);
+    printArea.setLifts(on);
   },
   'toggle-print': (on) => {
     setLayerVisible('print-area-mask', on);

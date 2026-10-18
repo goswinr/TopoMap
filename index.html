@@ -286,6 +286,9 @@
       .print-field input:out-of-range {
         color: #c00;
       }
+      .print-field[hidden] {
+        display: none;
+      }
       .print-field.wide input {
         grid-column: span 2;
       }
@@ -399,6 +402,10 @@
         Roads above blue line
       </label>
       <label class="toggle">
+        <input type="checkbox" role="switch" id="toggle-lifts" autocomplete="off" />
+        Ski lifts
+      </label>
+      <label class="toggle">
         <input type="checkbox" role="switch" id="toggle-print" autocomplete="off" />
         3D print
       </label>
@@ -436,6 +443,12 @@
         <label class="print-field">
           <span>Line height</span>
           <input name="line" type="number" min="0.04" max="2" step="0.04" value="0.2" />
+          <span>mm</span>
+        </label>
+        <!-- Height of the ridge each ski lift becomes; shown while the Ski lifts switch is on. -->
+        <label class="print-field" hidden>
+          <span>Lift height</span>
+          <input name="lift" type="number" min="0.04" max="2" step="0.04" value="0.4" />
           <span>mm</span>
         </label>
         <!-- Where the area reaches the sea, the base ends at the coastline. -->

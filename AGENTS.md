@@ -35,9 +35,15 @@ browser (see "Verifying changes").
 - `src/print-area.js`: `createPrintArea()`, the 3D print rectangle (MapLibre markers as
   handles), the `#print-panel` form, and the STL and ZIP downloads. Fills the
   `print-area` source.
-- `src/coast.js`: `loadSea()` fetches and decodes the OpenFreeMap vector tiles under the
-  print rectangle and keeps the sea polygons (`SEA_CLASSES` in `main.js`); `landField()`
-  turns them into each grid vertex's signed distance to the shore, in grid cells.
+- `src/vector-tiles.js`: `loadTiles()` fetches and decodes the OpenFreeMap vector tiles
+  under the print rectangle and keeps the features of one layer that pass a filter;
+  `lowerDistances()` measures grid vertex distances to a segment. Shared by the next two.
+- `src/coast.js`: `loadSea()` keeps the sea polygons (`SEA_CLASSES` in `main.js`);
+  `landField()` turns them into each grid vertex's signed distance to the shore, in grid
+  cells.
+- `src/lifts.js`: `loadLifts()` keeps the ski lifts (`LIFT_CLASSES` in `main.js`);
+  `liftField()` turns them into how far each grid vertex is raised, as a share of the
+  lift height.
 - `src/terrain-stl.js`: pure helpers for the print export: DEM tile loading, grid
   sampling, `buildBands()` (the model as solids between horizontal cuts, optionally cut
   off at the shore), `landRange()`, and the binary STL writer.
@@ -48,7 +54,8 @@ browser (see "Verifying changes").
 
 Style layer order, bottom to top: `background`, `hillshade`, `coastline`, `road-casing`,
 `roads-above-edge`, `roads-above`, `road`, `contour-every`, `contour-blue`, `contour-red`,
-`contour-green`, `print-area-mask`, `print-area-outline`, `place-labels`, `summit-labels`.
+`contour-green`, `ski-lifts`, `print-area-mask`, `print-area-outline`, `place-labels`,
+`summit-labels`.
 
 The contour layers start hidden; `applyContourMode()` in `main.js` shows the ones chosen
 in `#contour-mode` (the first 0–3 of `CONTOUR_LINES`, or `contour-every`), puts their
@@ -138,6 +145,13 @@ disabled.
     triangle on its other side as boundary, and splits it at every face point lying on
     it, found by position (`ON_EDGE`). An exact collinearity test doesn't work: earcut's
     rounding differs from ours on nearly straight shores.
+18. **Ski lifts are ridges in the height grid, not separate solids.** `buildBands()` adds
+    `raise` (mm per grid vertex) to the terrain, so the ridges are cut at the contour
+    lines and the shore like the rest, every part stays closed, and each layer keeps a
+    single colour. A separate lift solid would overlap the terrain parts, and in its own
+    colour would cost a filament change on every layer the lifts span. OpenMapTiles has
+    aerialways only from z12 on, so `loadLifts()` reads at least z12, and gives up on
+    large areas (`MAX_TILES`).
 
 ## Verifying changes
 
@@ -151,6 +165,8 @@ disabled.
     highlight.
   - `#12.5/43.74/7.42/0/0`: the coast at Monaco, for the coastline and the 3D print's
     cut at the coast. The DEM is 0 m over the sea.
+  - `#13.6/45.99/7.73/0/0`: the lifts above Zermatt, for the Ski lifts switch and the
+    ridges in the 3D print.
 - `map` is module-scoped, not on `window`. To inspect it in the browser, temporarily add
   `window.__dbg = { map };` and remove it afterwards. In v6 the per-source tile caches are
   internal, at `map.style.tileManagers[sourceId]` (`sourceCaches` in v5).

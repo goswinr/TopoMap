@@ -173,11 +173,13 @@ export function landRange(grid, land, nx, ny) {
  * @param {number} options.width model width in mm (west to east)
  * @param {number} options.depth model depth in mm (north to south)
  * @param {(ele: number) => number} options.toZ model height in mm for an elevation
+ * @param {Float32Array} [options.raise] per grid vertex, mm added on top of the terrain,
+ *   such as ridges for the ski lifts
  * @param {number[]} options.levels ascending cut heights in mm, starting with 0 (the bed)
  * @returns {Float32Array[]} per band, its triangles as x, y, z of three vertices each,
  *   counter-clockwise seen from outside
  */
-export function buildBands({ grid, land, nx, ny, width, depth, toZ, levels }) {
+export function buildBands({ grid, land, raise, nx, ny, width, depth, toZ, levels }) {
   const n = nx * ny;
   const dx = width / (nx - 1);
   const dy = depth / (ny - 1);
@@ -190,7 +192,7 @@ export function buildBands({ grid, land, nx, ny, width, depth, toZ, levels }) {
       const v = j * nx + i;
       X[v] = i * dx;
       Y[v] = (ny - 1 - j) * dy;
-      Z[v] = toZ(grid[v]);
+      Z[v] = toZ(grid[v]) + (raise ? raise[v] : 0);
     }
   }
   levels = spaceLevels(levels);

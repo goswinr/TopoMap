@@ -26,10 +26,12 @@ every N meters), and roads that light up when they climb above a chosen height.
   - **Roads above blue line**: roads above the blue line's height get a thick yellow
     outline, and all other roads turn grey (on by default). Needs the blue line, so it
     is disabled with 0 lines or every N m.
+  - **Ski lifts**: cable cars, gondolas, chair lifts and drag lifts as black lines, from
+    zoom 12 on (off by default). The 3D print then raises them as ridges on the terrain.
   - **3D print**: pick a rectangle on the map and download its terrain as STL for a
     slicer such as Bambu Studio, optionally with the contour lines as separate parts to
-    print in their own colours, and cut off at the coastline (off by default). See
-    [3D print export](#3d-print-export).
+    print in their own colours, cut off at the coastline, and with the ski lifts as
+    ridges (off by default). See [3D print export](#3d-print-export).
 
 The current view is kept in the URL (`#zoom/lat/lng/bearing/pitch`), so a reload keeps
 your place and a link opens the same view. All other settings (switches, contour heights,
@@ -60,7 +62,7 @@ The whole map is client-side. [src/main.js](src/main.js) defines the MapLibre st
 | Data | Source | Notes |
 |---|---|---|
 | Elevation | [Mapterhorn](https://mapterhorn.com/data-access/) tiles | Terrarium-encoded 512 px WebP. Global to zoom 12, up to zoom 17 where high-resolution data exists. |
-| Roads, coastline, place and summit names | [OpenFreeMap](https://openfreemap.org/) vector tiles | OpenStreetMap data in the [OpenMapTiles](https://openmaptiles.org/schema/) schema. The coastline is the outline of the `ocean` water polygons. |
+| Roads, coastline, ski lifts, place and summit names | [OpenFreeMap](https://openfreemap.org/) vector tiles | OpenStreetMap data in the [OpenMapTiles](https://openmaptiles.org/schema/) schema. The coastline is the outline of the `ocean` water polygons; the ski lifts are the `aerialway` lines, from zoom 12 on. |
 | Label fonts | OpenFreeMap | Noto Sans glyphs. |
 
 The same elevation tiles feed three things: the 3D terrain, the hillshade, and the
@@ -104,7 +106,11 @@ height exaggeration, the base thickness below the lowest point and the contour l
 height, and shows the resulting model size. Where the rectangle reaches the
 sea, **Cut off at the coastline** (on by default) prints only the land: the base ends at
 the coastline instead of covering the sea as a flat plate, and islands become separate
-pieces. The panel shows how much of the area is sea. There are two downloads:
+pieces. The panel shows how much of the area is sea. While the **Ski lifts** switch is
+on, each lift becomes a ridge along its route, **Lift height** (0.4 mm by default) above
+the terrain and 0.8 mm wide (`LIFT_WIDTH_MM`). The ridges are part of the terrain, so they
+print in the filament of whatever is at their height: the terrain's, or a contour line's
+where they cross it. There are two downloads:
 
 - **STL, one colour**: the whole model as one STL.
 - **ZIP, coloured lines**: the model cut horizontally at each contour line and one line
@@ -126,7 +132,10 @@ surface where the terrain crosses its height: wide on gentle slopes, narrow on s
 (`GRID_MM`, at most `MAX_GRID` samples per side), from the highest-resolution elevation
 tiles that cover the whole rectangle. [src/coast.js](src/coast.js) reads the sea polygons
 from the vector tiles at about the same resolution, and gives each grid point its
-distance to the shore, positive on land and negative at sea.
+distance to the shore, positive on land and negative at sea. [src/lifts.js](src/lifts.js)
+reads the ski lifts from the vector tiles too, at zoom 12 or finer (so at most about
+50 km across), and raises the grid points near them. The ridge's sides slope over one
+grid cell, so its edges fall between the grid points rather than following them in steps.
 [src/terrain-stl.js](src/terrain-stl.js) builds closed solids from the samples (terrain,
 walls, and flat faces at the bottom and at each cut) and writes them as binary STL in
 millimeters, with north pointing to the back of the bed. At the coast it cuts each grid
@@ -149,7 +158,9 @@ index.html          page markup, slider and switch styles (all CSS lives here)
 src/main.js         map setup: data sources, style layers, sliders, switches
 src/roads-above.js  elevation sampling for the "roads above blue line" highlight
 src/print-area.js   3D print area: map handles, export panel, downloads
+src/vector-tiles.js vector tiles under the print area, grid distances to their lines
 src/coast.js        sea polygons from the vector tiles, distance to the shore
+src/lifts.js        ski lifts from the vector tiles, raised as ridges on the print grid
 src/terrain-stl.js  elevation grid sampling, solids cut at heights and at the shore, STL writing
 src/zip.js          ZIP writer for the coloured-lines download
 src/settings.js     remembers the UI state in localStorage
@@ -168,6 +179,7 @@ Most settings are constants at the top of [src/main.js](src/main.js):
 | `EVERY_LINE` | Colour of the lines every N m |
 | `ROADS_ABOVE_LINE` | Which contour line drives the road highlight |
 | `SEA_CLASSES` | Which water polygons are outlined as coastline and cut off the 3D print (add `'lake'` for lakes) |
+| `LIFT_CLASSES` | Which aerialways count as ski lifts (material ropeways and zip lines are left out) |
 | `publicRoadFilter` | Which roads are shown |
 | `ROAD_COLORS`, `MUTED_ROAD_COLORS`, `ROAD_HIGHLIGHT*` | Road colours and outline widths |
 

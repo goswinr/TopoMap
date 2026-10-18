@@ -2,30 +2,11 @@
 // ocean), read straight from OpenMapTiles vector tiles, and turned into a value per
 // print grid vertex that says which side of the shore it is on and how far away.
 
-import { PbfReader } from 'pbf';
-import { VectorTile } from '@mapbox/vector-tile';
+import { clipSegment, loadTiles, lowerDistances } from './vector-tiles.js';
 
 // Distances to the shore are measured up to this many grid cells. Only the vertices
 // next to the shore need them, to place it between the vertices.
 export const SHORE_REACH = 2;
-
-const tileJsons = new Map(); // TileJSON URL -> its request
-
-function tileJsonOf(url) {
-  if (!tileJsons.has(url)) {
-    const request = fetch(url)
-      .then((response) => {
-        if (!response.ok) throw new Error(`TileJSON: HTTP ${response.status}`);
-        return response.json();
-      })
-      .catch((err) => {
-        tileJsons.delete(url); // try again next time
-        throw err;
-      });
-    tileJsons.set(url, request);
-  }
-  return tileJsons.get(url);
-}
 
 /**
  * Loads the sea polygons in the vector tiles covering `bounds`, extended by `pad`.
@@ -40,34 +21,16 @@ function tileJsonOf(url) {
  *   square [x0, y0, x1, y1] and its sea polygons as rings of x, y world coordinates
  */
 export async function loadSea({ tileJson, layer, classes }, bounds, zoom, pad) {
-  const { tiles: [template], maxzoom = 14 } = await tileJsonOf(tileJson);
-  const z = Math.min(Math.max(Math.round(zoom), 0), maxzoom);
-  const n = 2 ** z;
-  const tileOf = (w) => Math.min(Math.max(Math.floor(w * n), 0), n - 1);
-  const requests = [];
-  for (let y = tileOf(bounds.y0 - pad); y <= tileOf(bounds.y1 + pad); y++) {
-    for (let x = tileOf(bounds.x0 - pad); x <= tileOf(bounds.x1 + pad); x++) {
-      requests.push(loadTile(template, z, x, y, layer, classes));
-    }
-  }
-  return Promise.all(requests);
-}
-
-async function loadTile(template, z, x, y, layerName, classes) {
-  const url = template.replace('{z}', z).replace('{x}', x).replace('{y}', y);
-  const response = await fetch(url);
   // A tile that didn't load can't tell land from sea, so the whole coastline fails.
-  if (!response.ok) throw new Error(`Coastline tile ${z}/${x}/${y}: HTTP ${response.status}`);
-  const layer = new VectorTile(new PbfReader(new Uint8Array(await response.arrayBuffer()))).layers[layerName];
-  const n = 2 ** z;
-  const polygons = [];
-  for (let f = 0; f < (layer?.length ?? 0); f++) {
-    const feature = layer.feature(f);
-    if (feature.type !== 3 || !classes.includes(feature.properties.class)) continue;
-    const toWorld = (p) => [(x + p.x / layer.extent) / n, (y + p.y / layer.extent) / n];
-    polygons.push(feature.loadGeometry().map((ring) => Float64Array.from(ring.flatMap(toWorld))));
-  }
-  return { square: [x / n, y / n, (x + 1) / n, (y + 1) / n], polygons };
+  const tiles = await loadTiles({
+    tileJson,
+    layer,
+    filter: (feature) => feature.type === 3 && classes.includes(feature.properties.class),
+    bounds,
+    zoom,
+    pad,
+  });
+  return tiles.map(({ square, features }) => ({ square, polygons: features }));
 }
 
 /**
@@ -124,28 +87,8 @@ export function landField(tiles, bounds, nx, ny) {
       for (const ring of rings) {
         forEachEdge(ring, (ax, ay, bx, by) => {
           const seg = clipSegment(ax, ay, bx, by, gx0, gy0, gx1, gy1);
-          if (seg) measure(...seg);
+          if (seg) lowerDistances(dist, nx, ny, SHORE_REACH, ...seg);
         });
-      }
-    }
-  }
-
-  // Lowers dist[] around segment a-b, in pieces of at most one cell, so only
-  // vertices near the segment are visited.
-  function measure(ax, ay, bx, by) {
-    const steps = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay)));
-    for (let s = 0; s < steps; s++) {
-      const x0 = ax + ((bx - ax) * s) / steps;
-      const y0 = ay + ((by - ay) * s) / steps;
-      const x1 = ax + ((bx - ax) * (s + 1)) / steps;
-      const y1 = ay + ((by - ay) * (s + 1)) / steps;
-      const iEnd = Math.min(Math.floor(Math.max(x0, x1) + SHORE_REACH), nx - 1);
-      const jEnd = Math.min(Math.floor(Math.max(y0, y1) + SHORE_REACH), ny - 1);
-      for (let j = Math.max(Math.ceil(Math.min(y0, y1) - SHORE_REACH), 0); j <= jEnd; j++) {
-        for (let i = Math.max(Math.ceil(Math.min(x0, x1) - SHORE_REACH), 0); i <= iEnd; i++) {
-          const d = segmentDistance(i, j, ax, ay, bx, by);
-          if (d < dist[j * nx + i]) dist[j * nx + i] = d;
-        }
       }
     }
   }
@@ -165,30 +108,4 @@ function forEachEdge(ring, fn) {
     const next = (k + 2) % ring.length;
     fn(ring[k], ring[k + 1], ring[next], ring[next + 1]);
   }
-}
-
-/** Segment a-b clipped to the rectangle x0..x1 × y0..y1 (Liang-Barsky), or null. */
-function clipSegment(ax, ay, bx, by, x0, y0, x1, y1) {
-  const dx = bx - ax;
-  const dy = by - ay;
-  let t0 = 0;
-  let t1 = 1;
-  for (const [p, q] of [[-dx, ax - x0], [dx, x1 - ax], [-dy, ay - y0], [dy, y1 - ay]]) {
-    if (p === 0) {
-      if (q < 0) return null;
-    } else if (p < 0) {
-      t0 = Math.max(t0, q / p);
-    } else {
-      t1 = Math.min(t1, q / p);
-    }
-  }
-  return t0 <= t1 ? [ax + t0 * dx, ay + t0 * dy, ax + t1 * dx, ay + t1 * dy] : null;
-}
-
-function segmentDistance(x, y, ax, ay, bx, by) {
-  const dx = bx - ax;
-  const dy = by - ay;
-  const len2 = dx * dx + dy * dy;
-  const t = len2 ? Math.min(Math.max(((x - ax) * dx + (y - ay) * dy) / len2, 0), 1) : 0;
-  return Math.hypot(x - ax - t * dx, y - ay - t * dy);
 }

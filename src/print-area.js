@@ -16,6 +16,7 @@ import { zip } from './zip.js';
 const GRID_MM = 0.3; // sample spacing on the print, below what a 0.4 mm nozzle can draw
 const MAX_GRID = 800; // samples per side, caps the STL near 1.3M triangles (64 MB)
 const MIN_SIDE_MM = 5;
+const SIZE_INPUTS = ['size', 'short', 'scale']; // longest side and short side in mm, 1:scale
 const START_SIZE = 0.4; // side of a new rectangle, as a fraction of the smaller map side
 const UPDATE_DELAY_MS = 300;
 // At most 80 ASCII characters; the coastline comes from OpenStreetMap.
@@ -45,6 +46,9 @@ export function createPrintArea(map, { demSource, sea, sourceId, form }) {
       input.value = saved;
     }
   }
+  // The model size comes from the last edited of SIZE_INPUTS; the others show what it
+  // gives for the area's shape, and follow when the area changes.
+  let sizeBy = SIZE_INPUTS.includes(load('print.sizeBy')) ? load('print.sizeBy') : 'size';
   const stats = form.querySelector('.print-stats');
   const colors = form.querySelector('.print-colors');
   let contours = { lines: [] }; // see setContours()
@@ -141,6 +145,7 @@ export function createPrintArea(map, { demSource, sea, sourceId, form }) {
   function setBounds({ x0, y0, x1, y1 }) {
     bounds = { x0: Math.min(x0, x1), y0: Math.min(y0, y1), x1: Math.max(x0, x1), y1: Math.max(y0, y1) };
     save('print.bounds', bounds);
+    showSize();
     const ring = [0, 1, 2, 3, 0].map((k) => toLngLat(...cornerOf(bounds, k)).toArray());
     // Shade everything outside the rectangle: the world with the rectangle as a hole.
     const world = [[-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85]];
@@ -151,6 +156,25 @@ export function createPrintArea(map, { demSource, sea, sourceId, form }) {
         { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: ring } },
       ],
     });
+  }
+
+  /** The model's mm per meter of terrain in the area `b`, from the input that sets the size. */
+  function mmPerMeter(b) {
+    if (sizeBy === 'scale') return 1000 / readNumber(inputs.scale);
+    const metersPerUnit = metersPerWorldUnit(b);
+    const sides = [(b.x1 - b.x0) * metersPerUnit, (b.y1 - b.y0) * metersPerUnit];
+    return sizeBy === 'short' ? readNumber(inputs.short) / Math.min(...sides) : readNumber(inputs.size) / Math.max(...sides);
+  }
+
+  /** Fills the size inputs that don't set the size with what it gives for the current area. */
+  function showSize() {
+    const metersPerUnit = metersPerWorldUnit(bounds);
+    const mmPerM = mmPerMeter(bounds);
+    const sides = [bounds.x1 - bounds.x0, bounds.y1 - bounds.y0].map((span) => span * metersPerUnit * mmPerM);
+    const values = { size: Math.max(...sides), short: Math.min(...sides), scale: 1000 / mmPerM };
+    for (const name of SIZE_INPUTS) {
+      if (name !== sizeBy) inputs[name].value = Math.round(values[name]);
+    }
   }
 
   function placeHandles() {
@@ -175,7 +199,7 @@ export function createPrintArea(map, { demSource, sea, sourceId, form }) {
     const spanX = b.x1 - b.x0;
     const spanY = b.y1 - b.y0;
     const span = Math.max(spanX, spanY);
-    const size = readNumber(inputs.size);
+    const size = span * metersPerWorldUnit(b) * mmPerMeter(b); // longest side in mm
     if (!(size * Math.min(spanX, spanY) >= MIN_SIDE_MM * span)) {
       status = 'Drag the handles further apart.';
       render();
@@ -221,7 +245,7 @@ export function createPrintArea(map, { demSource, sea, sourceId, form }) {
     const metersPerUnit = metersPerWorldUnit(b);
     const widthM = (b.x1 - b.x0) * metersPerUnit;
     const depthM = (b.y1 - b.y0) * metersPerUnit;
-    const mmPerM = readNumber(inputs.size) / Math.max(widthM, depthM);
+    const mmPerM = mmPerMeter(b);
     const zPerM = mmPerM * readNumber(inputs.exaggeration);
     const base = readNumber(inputs.base);
     return {
@@ -290,7 +314,6 @@ export function createPrintArea(map, { demSource, sea, sourceId, form }) {
     stats.innerHTML = `
       <dt>Area</dt><dd>${(m.widthM / 1000).toFixed(2)} × ${(m.depthM / 1000).toFixed(2)} km</dd>
       <dt>Model</dt><dd>${mm(m.width)} × ${mm(m.depth)} × ${mm(m.height)} mm</dd>
-      <dt>Scale</dt><dd>1:${Math.round(m.scale).toLocaleString('en')}</dd>
       <dt>Elevation</dt><dd>${Math.round(m.min)}–${Math.round(m.max)} m</dd>
       <dt>Terrain data</dt><dd>${m.demPixel.toFixed(1)} m grid</dd>
       ${seaRow}`;
@@ -421,8 +444,12 @@ export function createPrintArea(map, { demSource, sea, sourceId, form }) {
     else if (Number.isFinite(e.target.valueAsNumber)) save(`print.${e.target.name}`, e.target.valueAsNumber);
     // Only the model size changes the sampling grid; the rest just rescales heights or
     // picks the terrain with or without the sea, both already sampled.
-    if (e.target === inputs.size) scheduleUpdate();
-    else if (model) render();
+    if (SIZE_INPUTS.includes(e.target.name)) {
+      sizeBy = e.target.name;
+      save('print.sizeBy', sizeBy);
+      showSize();
+      scheduleUpdate();
+    } else if (model) render();
   });
   inputs.download.addEventListener('click', downloadStl);
   inputs.downloadParts.addEventListener('click', downloadParts);

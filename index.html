@@ -282,6 +282,16 @@
         font: inherit;
         font-variant-numeric: tabular-nums;
       }
+      /* Clamped when used; mostly a size that another input gives, beyond this one's range. */
+      .print-field input:out-of-range {
+        color: #c00;
+      }
+      .print-field.wide input {
+        grid-column: span 2;
+      }
+      .print-ratio {
+        float: right;
+      }
       .print-check {
         display: flex;
         align-items: center;
@@ -395,10 +405,21 @@
       <!-- Filled and shown by createPrintArea while the 3D print switch is on. -->
       <form id="print-panel" autocomplete="off" hidden>
         <p class="print-hint">Drag the handles to choose the area. Hold Ctrl or Shift for a non-square one.</p>
+        <!-- The model size: the last edited of these three sets it, and the other two
+             show what that gives for the area's shape. -->
         <label class="print-field">
           <span>Longest side</span>
           <input name="size" type="number" min="20" max="350" step="10" value="150" />
           <span>mm</span>
+        </label>
+        <label class="print-field">
+          <span>Short side</span>
+          <input name="short" type="number" min="5" max="350" step="5" value="150" />
+          <span>mm</span>
+        </label>
+        <label class="print-field wide">
+          <span>Scale <span class="print-ratio">1:</span></span>
+          <input name="scale" type="number" min="1000" max="10000000" step="1000" value="25000" />
         </label>
         <label class="print-field">
           <span>Height scale</span>

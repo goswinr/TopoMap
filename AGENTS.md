@@ -44,7 +44,7 @@ browser (see "Verifying changes").
 - `src/zip.js`: a minimal ZIP writer using the browser's `CompressionStream`.
 - `src/settings.js`: `load()` / `save()` of UI state in localStorage, under flat keys
   (`switch.<id>`, `contour.<id>`, `contour.mode`, `contour.every`, `print.<input name>`,
-  `print.bounds`, `terrain`, `view`). Validate what you load: stored values can be stale or from an older version.
+  `print.bounds`, `print.sizeBy`, `terrain`, `view`). Validate what you load: stored values can be stale or from an older version.
 
 Style layer order, bottom to top: `background`, `hillshade`, `coastline`, `road-casing`,
 `roads-above-edge`, `roads-above`, `road`, `contour-every`, `contour-blue`, `contour-red`,

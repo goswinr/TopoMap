@@ -97,9 +97,11 @@ underneath it.
 
 The **3D print** switch puts a north-up rectangle on the map. Drag its corner handles to
 resize it, and the center handle to move it. A corner keeps the rectangle square; hold
-Ctrl or Shift while dragging it to change the proportions. The panel sets the model's longest side, a
+Ctrl or Shift while dragging it to change the proportions. The panel sets the model's
+size as its longest side, its short side or its scale: the one edited last sets it, and
+the other two follow the rectangle's shape, also while you drag it. It also sets a
 height exaggeration, the base thickness below the lowest point and the contour line
-height, and shows the resulting model size and scale. Where the rectangle reaches the
+height, and shows the resulting model size. Where the rectangle reaches the
 sea, **Cut off at the coastline** (on by default) prints only the land: the base ends at
 the coastline instead of covering the sea as a flat plate, and islands become separate
 pieces. The panel shows how much of the area is sea. There are two downloads:

@@ -11,6 +11,8 @@
   "dependencies": {
     "@mapbox/vector-tile": "3.0.0",
     "earcut": "3.2.4",
+    "fzstd": "0.1.1",
+    "hyparquet": "1.31.2",
     "maplibre-contour": "0.1.1",
     "maplibre-gl": "6.12.0",
     "pbf": "5.1.2"

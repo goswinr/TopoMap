@@ -5,6 +5,7 @@ import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import mlcontour from 'maplibre-contour'; // default export only
 import { createRoadsAboveHighlight } from './roads-above.js';
 import { createPrintArea } from './print-area.js';
+import { createBuildingSource } from './buildings.js';
 import { load, loadNumber, save } from './settings.js';
 
 maplibregl.setWorkerUrl(workerUrl);
@@ -59,6 +60,17 @@ const LIFT_CLASSES = [
   'cable_car', 'gondola', 'mixed_lift', 'chair_lift',
   'drag_lift', 't-bar', 'j-bar', 'platter', 'rope_tow', 'magic_carpet',
 ];
+
+// 3D buildings: footprints and heights from the GlobalBuildingAtlas (TU Munich), read
+// straight from its GeoParquet files on Source Cooperative, keyless. CC BY-NC 4.0, so
+// not for commercial use. A view below BUILDINGS_MINZOOM would hold too many.
+const BUILDINGS_URL = 'https://data.source.coop/tge-labs/globalbuildingatlas-lod1/';
+const BUILDINGS_ATTRIBUTION =
+  '<a href="https://github.com/zhu-xlab/GlobalBuildingAtlas" target="_blank">GlobalBuildingAtlas</a> (CC BY-NC 4.0)';
+const BUILDINGS_MINZOOM = 14;
+// Many heights are near 0 (sheds, or underestimated); such buildings are drawn and
+// printed this high (meters), so none disappears into the terrain.
+const BUILDING_MIN_HEIGHT = 2;
 
 const labelHalo = {
   'text-halo-color': 'rgb(255 255 255 / 0.9)',
@@ -123,6 +135,10 @@ const contourDem = new mlcontour.DemSource({
 });
 contourDem.setupMaplibre(maplibregl);
 
+// Serves the buildings as vector tiles, decoded in a worker of its own.
+const buildingSource = createBuildingSource({ url: BUILDINGS_URL, minHeight: BUILDING_MIN_HEIGHT });
+buildingSource.setupMaplibre(maplibregl);
+
 // The view lives in the URL hash, so links keep it. Without a hash, reopen the last
 // view, or else the Matterhorn.
 const START_VIEW = { center: [7.6586, 45.9763], zoom: 12.5, pitch: 60, bearing: -120 };
@@ -156,6 +172,15 @@ const map = new maplibregl.Map({
           }),
         ],
         maxzoom: 17,
+      },
+      // Tiles at one zoom only, overzoomed above it. The far tiles of a pitched view,
+      // which would want a lower zoom, are then left out rather than loaded.
+      buildings: {
+        type: 'vector',
+        tiles: [buildingSource.tileUrl],
+        minzoom: BUILDINGS_MINZOOM,
+        maxzoom: BUILDINGS_MINZOOM,
+        attribution: BUILDINGS_ATTRIBUTION,
       },
     },
     layers: [
@@ -276,6 +301,21 @@ const map = new maplibregl.Map({
           'line-width': ['interpolate', ['linear'], ['zoom'], 12, 1.5, 16, 3],
         },
       },
+      // With 3D terrain, MapLibre stands each building on the ground at its center. The
+      // minzoom also keeps a pitched view below it from loading its nearest tiles.
+      {
+        id: 'buildings',
+        type: 'fill-extrusion',
+        source: 'buildings',
+        'source-layer': 'buildings',
+        minzoom: BUILDINGS_MINZOOM,
+        layout: { visibility: 'none' },
+        paint: {
+          'fill-extrusion-color': '#d9d0c5',
+          'fill-extrusion-height': ['get', 'height'],
+          'fill-extrusion-opacity': 0.9,
+        },
+      },
       // 3D print area (filled by createPrintArea): the outside shaded, and an outline.
       {
         id: 'print-area-mask',
@@ -379,6 +419,7 @@ const printArea = createPrintArea(map, {
   demSource: contourDem,
   sea: { tileJson: OPENFREEMAP_TILEJSON, layer: 'water', classes: SEA_CLASSES },
   lifts: { tileJson: OPENFREEMAP_TILEJSON, layer: 'transportation', classes: LIFT_CLASSES },
+  buildings: buildingSource,
   sourceId: 'print-area',
   form: document.getElementById('print-panel'),
 });
@@ -401,10 +442,15 @@ const TOGGLES = {
     setLayerVisible('roads-above', on);
     roadsAbove.setEnabled(on);
   },
-  // Before the 3D print, so on load its area is sampled once, with or without lifts.
+  // Before the 3D print, so on load its area is sampled once, with or without lifts
+  // and buildings.
   'toggle-lifts': (on) => {
     setLayerVisible('ski-lifts', on);
     printArea.setLifts(on);
+  },
+  'toggle-buildings': (on) => {
+    setLayerVisible('buildings', on);
+    printArea.setBuildings(on);
   },
   'toggle-print': (on) => {
     setLayerVisible('print-area-mask', on);

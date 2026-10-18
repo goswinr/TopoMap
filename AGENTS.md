@@ -19,10 +19,12 @@ browser (see "Verifying changes").
 - Plain JavaScript ES modules, no framework, no TypeScript.
 - MapLibre GL JS 6.x, maplibre-contour 0.1.x, Vite 8. earcut 3.x, @mapbox/vector-tile 3.x
   and pbf 5.x are MapLibre dependencies too; keep them at the versions MapLibre uses, so
-  there's one copy of each. `package.json` pins exact versions.
-- All runtime data comes from keyless public services: Mapterhorn (elevation) and
-  OpenFreeMap (vector tiles and fonts). Don't add services that need an API key without
-  asking the user.
+  there's one copy of each. hyparquet 1.x and fzstd 0.1.x read the building GeoParquet
+  files. `package.json` pins exact versions.
+- All runtime data comes from keyless public services: Mapterhorn (elevation),
+  OpenFreeMap (vector tiles and fonts) and Source Cooperative (GlobalBuildingAtlas
+  buildings, as GeoParquet). Don't add services that need an API key without asking
+  the user.
 
 ## Layout
 
@@ -44,6 +46,12 @@ browser (see "Verifying changes").
 - `src/lifts.js`: `loadLifts()` keeps the ski lifts (`LIFT_CLASSES` in `main.js`);
   `liftField()` turns them into how far each grid vertex is raised, as a share of the
   lift height.
+- `src/buildings.js`: `createBuildingSource()`, the map's `gba://` tile protocol and the
+  print's `load()`, both answered by the worker; `buildingField()` turns buildings into
+  how far each grid vertex is raised, in meters.
+- `src/buildings-worker.js`: a module worker that reads the GlobalBuildingAtlas
+  GeoParquet files (one per 5° cell) with range requests, caches decoded row groups,
+  and writes vector tiles (a minimal MVT encoder on pbf's `PbfWriter`).
 - `src/terrain-stl.js`: pure helpers for the print export: DEM tile loading, grid
   sampling, `buildBands()` (the model as solids between horizontal cuts, optionally cut
   off at the shore), `landRange()`, and the binary STL writer.
@@ -54,8 +62,10 @@ browser (see "Verifying changes").
 
 Style layer order, bottom to top: `background`, `hillshade`, `coastline`, `road-casing`,
 `roads-above-edge`, `roads-above`, `road`, `contour-every`, `contour-blue`, `contour-red`,
-`contour-green`, `ski-lifts`, `print-area-mask`, `print-area-outline`, `place-labels`,
-`summit-labels`.
+`contour-green`, `ski-lifts`, `buildings`, `print-area-mask`, `print-area-outline`,
+`place-labels`, `summit-labels`. With 3D terrain the layers after `buildings` are draped
+over it after the extrusions, so the print mask also shades the buildings outside the
+rectangle.
 
 The contour layers start hidden; `applyContourMode()` in `main.js` shows the ones chosen
 in `#contour-mode` (the first 0–3 of `CONTOUR_LINES`, or `contour-every`), puts their
@@ -152,6 +162,27 @@ disabled.
     colour would cost a filament change on every layer the lifts span. OpenMapTiles has
     aerialways only from z12 on, so `loadLifts()` reads at least z12, and gives up on
     large areas (`MAX_TILES`).
+19. **Buildings come from GeoParquet files, not a tile server.** Each 5° cell is one file
+    (`e005_n50_e010_n45.parquet`: west, north, east, south), up to 1.7 GB, with a ~2 MB
+    footer. Rows are Hilbert-sorted, so the row groups' `bbox.*` statistics act as a
+    spatial index; read only `height` and `geometry` of the row groups that meet the
+    area. A missing file (404) means no buildings. The first tile in a new cell takes
+    several seconds. Don't use the GlobalBuildingAtlas viewer's WFS instead: it answers
+    direct requests with 403, and its README asks not to stream features from it.
+20. **Chrome fails concurrent range requests to a URL it has partly cached** with
+    `net::ERR_CACHE_OPERATION_NOT_SUPPORTED`, seen as "Failed to fetch". It only shows
+    on a second visit, so a fresh browser profile hides it. The worker fetches with
+    `cache: 'no-store'`.
+21. **The buildings source has tiles at one zoom only, and the layer a minzoom.**
+    `minzoom` = `maxzoom` = `BUILDINGS_MINZOOM` on the source makes MapLibre skip the far
+    tiles of a pitched view (they'd want a lower zoom) instead of loading them all at
+    z14. The same `minzoom` on the layer keeps the nearest tiles of a pitched view below
+    z14 from loading.
+22. **Buildings on the print are raised in meters, scaled at measure time.**
+    `buildingField()` gives meters above the terrain (a flat roof at the lowest ground
+    under the outline plus the height); `raiseOf()` in `print-area.js` multiplies them
+    by the height scale and takes the max with the lift ridges. Like the lifts, this
+    keeps every part closed (pitfall 18).
 
 ## Verifying changes
 
@@ -167,6 +198,10 @@ disabled.
     cut at the coast. The DEM is 0 m over the sea.
   - `#13.6/45.99/7.73/0/0`: the lifts above Zermatt, for the Ski lifts switch and the
     ridges in the 3D print.
+  - `#15.5/47.3782/8.5402/-20/55`: Zürich main station, for the 3D buildings. The
+    Matterhorn and Zermatt views have none: the data has a gap there.
+- The buildings worker runs in Node too, with a stub `self` whose `postMessage` collects
+  the replies: import it, then call `self.onmessage({ data: { id, type, ... } })`.
 - `map` is module-scoped, not on `window`. To inspect it in the browser, temporarily add
   `window.__dbg = { map };` and remove it afterwards. In v6 the per-source tile caches are
   internal, at `map.style.tileManagers[sourceId]` (`sourceCaches` in v5).

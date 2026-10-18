@@ -2,16 +2,18 @@
 // panel that turns the terrain inside it into STL files for a slicer: either one
 // STL, or a ZIP with the contour lines as separate parts for their own filaments.
 // Where the rectangle reaches the sea, the model can end at the coastline, and ski
-// lifts can stand out as ridges on the terrain.
+// lifts and buildings can stand out on the terrain.
 //
 // The rectangle is kept in Web Mercator world units ([0, 1], y down). Its terrain,
-// sea and lifts are sampled when the rectangle or the model size changes, so the
-// panel can show the model's real heights, including where each contour line ends up.
+// sea, lifts and buildings are sampled when the rectangle or the model size changes,
+// so the panel can show the model's real heights, including where each contour line
+// ends up.
 
 import * as maplibregl from 'maplibre-gl';
 import { buildBands, demZoomFor, landRange, loadDem, metersPerWorldUnit, sampleGrid, writeStl } from './terrain-stl.js';
 import { SHORE_REACH, landField, loadSea } from './coast.js';
 import { liftField, loadLifts } from './lifts.js';
+import { buildingField } from './buildings.js';
 import { load, loadNumber, save } from './settings.js';
 import { zip } from './zip.js';
 
@@ -24,9 +26,11 @@ const UPDATE_DELAY_MS = 300;
 // Ski lift ridges, at half their height: two lines of a 0.4 mm nozzle. The sides
 // slope over one grid cell, see liftField().
 const LIFT_WIDTH_MM = 0.8;
-// At most 80 ASCII characters; the coastline and the lifts come from OpenStreetMap.
+// At most 80 ASCII characters; the coastline and the lifts come from OpenStreetMap,
+// and so do many of the building footprints.
 const STL_HEADER = 'TopoMap terrain, elevation (c) Mapterhorn, mapterhorn.com/attribution';
 const STL_HEADER_OSM = 'TopoMap terrain (c) Mapterhorn, map data (c) OpenStreetMap contributors';
+const STL_HEADER_BUILDINGS = 'TopoMap terrain (c) Mapterhorn, OpenStreetMap, GlobalBuildingAtlas CC BY-NC';
 
 // Corner handles in order NW, NE, SE, SW: corner k ^ 2 is opposite corner k,
 // k ^ 1 shares its north/south edge and 3 - k its west/east edge.
@@ -38,10 +42,11 @@ const cornerOf = ({ x0, y0, x1, y1 }, k) => [k === 1 || k === 2 ? x1 : x0, k >= 
  * @param {object} options.demSource maplibre-contour DemSource to read elevations from
  * @param {object} options.sea where the sea polygons are, see loadSea()
  * @param {object} options.lifts where the ski lifts are, see loadLifts()
+ * @param {object} options.buildings building source from createBuildingSource()
  * @param {string} options.sourceId GeoJSON source that receives the rectangle
  * @param {HTMLFormElement} options.form the export panel
  */
-export function createPrintArea(map, { demSource, sea, lifts, sourceId, form }) {
+export function createPrintArea(map, { demSource, sea, lifts, buildings, sourceId, form }) {
   const inputs = form.elements;
   // The panel's last values; readNumber() clamps stale ones to each input's range.
   for (const input of form.querySelectorAll('input[name]')) {
@@ -59,10 +64,14 @@ export function createPrintArea(map, { demSource, sea, lifts, sourceId, form }) 
   const colors = form.querySelector('.print-colors');
   let contours = { lines: [] }; // see setContours()
   let liftsOn = false; // see setLifts()
+  let buildingsOn = false; // see setBuildings()
   let bounds = null;
   // The sampled area: { bounds, nx, ny, demZoom, grid, min, max }, and where the sea is:
   // { land, seaShare, landMin, landMax } (land is null without sea), or seaError. With
   // liftsOn, also the lifts: { lifts } from liftField() (null if none), or liftError.
+  // With buildingsOn, also the buildings: { buildings } from buildingField() (null if
+  // none reaches a grid vertex) and { footprints }, how many are in the area; or
+  // buildingError.
   let model = null;
   let status = '';
   let enabled = false;
@@ -199,11 +208,13 @@ export function createPrintArea(map, { demSource, sea, lifts, sourceId, form }) 
     timer = setTimeout(update, UPDATE_DELAY_MS);
   }
 
-  // The model lacks the lifts if they were off when it was sampled, or didn't load.
-  const stale = () => !model || (liftsOn && model.lifts === undefined);
+  // The model lacks the lifts or buildings if they were off when it was sampled, or
+  // didn't load.
+  const stale = () =>
+    !model || (liftsOn && model.lifts === undefined) || (buildingsOn && model.buildings === undefined);
 
-  // Sample the terrain on the print grid, at the DEM zoom that resolves it, and the
-  // sea and the lifts from vector tiles of about the same resolution.
+  // Sample the terrain on the print grid, at the DEM zoom that resolves it, the sea and
+  // the lifts from vector tiles of about the same resolution, and the buildings.
   async function update() {
     const gen = generation;
     const b = bounds;
@@ -222,11 +233,13 @@ export function createPrintArea(map, { demSource, sea, lifts, sourceId, form }) 
     const demZoom = demZoomFor(spacing);
     const liftHalfWidth = (LIFT_WIDTH_MM / 2) * (span / (size * spacing)); // grid cells
     try {
-      const [dem, seaTiles, liftLines] = await Promise.all([
+      const [dem, seaTiles, liftLines, footprints] = await Promise.all([
         loadDem(demSource, b, demZoom),
-        // Without the sea or the lifts the model still works, just without them.
+        // Without the sea, the lifts or the buildings the model still works, just
+        // without them.
         loadSea(sea, b, demZoom, (SHORE_REACH + 1) * spacing).catch((err) => err),
         liftsOn ? loadLifts(lifts, b, demZoom, (liftHalfWidth + 1) * spacing).catch((err) => err) : undefined,
+        buildingsOn ? buildings.load(b, spacing).catch((err) => err) : undefined,
       ]);
       if (gen !== generation) return;
       model = { bounds: b, nx, ny, demZoom: dem.z, ...sampleGrid(dem, b, nx, ny), land: null };
@@ -244,6 +257,12 @@ export function createPrintArea(map, { demSource, sea, lifts, sourceId, form }) 
       } else if (liftLines) {
         model.lifts = liftField(liftLines, b, nx, ny, liftHalfWidth);
       }
+      if (footprints instanceof Error) {
+        model.buildingError = footprints instanceof RangeError ? 'area too large' : 'didn’t load';
+      } else if (footprints) {
+        model.buildings = buildingField(footprints, model.grid, b, nx, ny);
+        model.footprints = footprints.heights.length;
+      }
     } catch (err) {
       if (gen !== generation) return;
       status = err.message;
@@ -254,7 +273,8 @@ export function createPrintArea(map, { demSource, sea, lifts, sourceId, form }) 
   /**
    * The terrain to print, and the model's dimensions in mm for the current inputs.
    * The terrain is cut at the coastline if there's sea and the panel asks for it, and
-   * has the lifts (as liftField() shares of liftHeight) while they are on.
+   * has the lifts (as liftField() shares of liftHeight) and the buildings (as
+   * buildingField() meters, at the height scale) while they are on.
    */
   function measure() {
     const cut = Boolean(model.land) && inputs.coast.checked;
@@ -267,18 +287,20 @@ export function createPrintArea(map, { demSource, sea, lifts, sourceId, form }) 
     const mmPerM = mmPerMeter(b);
     const zPerM = mmPerM * readNumber(inputs.exaggeration);
     const base = readNumber(inputs.base);
+    const raised = (buildingsOn && model.buildings) || null;
     return {
       grid,
       land: cut ? model.land : null,
       lifts: (liftsOn && model.lifts) || null,
       liftHeight: readNumber(inputs.lift),
+      buildings: raised,
       min,
       max,
       widthM,
       depthM,
       width: widthM * mmPerM,
       depth: depthM * mmPerM,
-      height: base + (max - min) * zPerM,
+      height: base + (Math.max(max, raised?.top ?? -Infinity) - min) * zPerM,
       scale: 1000 / mmPerM,
       demPixel: metersPerUnit / (512 * 2 ** model.demZoom),
       zPerM,
@@ -337,13 +359,20 @@ export function createPrintArea(map, { demSource, sea, lifts, sourceId, form }) 
       const text = model.liftError ?? (m.lifts ? `raised ${m.liftHeight} mm` : 'none in area');
       liftRow = `<dt>Ski lifts</dt><dd>${text}</dd>`;
     }
+    let buildingRow = '';
+    if (buildingsOn) {
+      const raised = m.buildings && `${m.buildings.count.toLocaleString('en')} raised, up to ${(m.buildings.highest * m.zPerM).toFixed(1)} mm`;
+      const text = model.buildingError ?? raised ?? (model.footprints ? 'too small for the grid' : 'none in area');
+      buildingRow = `<dt>Buildings</dt><dd>${text}</dd>`;
+    }
     stats.innerHTML = `
       <dt>Area</dt><dd>${(m.widthM / 1000).toFixed(2)} × ${(m.depthM / 1000).toFixed(2)} km</dd>
       <dt>Model</dt><dd>${mm(m.width)} × ${mm(m.depth)} × ${mm(m.height)} mm</dd>
       <dt>Elevation</dt><dd>${Math.round(m.min)}–${Math.round(m.max)} m</dd>
       <dt>Terrain data</dt><dd>${m.demPixel.toFixed(1)} m grid</dd>
       ${seaRow}
-      ${liftRow}`;
+      ${liftRow}
+      ${buildingRow}`;
     const slices = lineSlices(m);
     let rows;
     if (contours.every) {
@@ -388,15 +417,26 @@ export function createPrintArea(map, { demSource, sea, lifts, sourceId, form }) 
   // The whole model as one STL, for a single filament.
   function downloadStl() {
     return busy(inputs.download, (m) => {
-      const stl = writeStl(buildBands({ ...model, ...m, raise: liftRaise(m), levels: [0] }), stlHeader(m));
+      const stl = writeStl(buildBands({ ...model, ...m, raise: raiseOf(m), levels: [0] }), stlHeader(m));
       saveFile(new Blob([stl], { type: 'model/stl' }), `${fileName()}.stl`);
     });
   }
 
-  const stlHeader = (m) => (m.land || m.lifts ? STL_HEADER_OSM : STL_HEADER);
+  const stlHeader = (m) => (m.buildings ? STL_HEADER_BUILDINGS : m.land || m.lifts ? STL_HEADER_OSM : STL_HEADER);
 
-  /** Per grid vertex, the mm the lifts raise the terrain by; null without lifts. */
-  const liftRaise = ({ lifts, liftHeight }) => lifts && lifts.map((share) => share * liftHeight);
+  /**
+   * Per grid vertex, the mm the lifts and the buildings raise the terrain by; null
+   * without either. Where a lift meets a building, such as at its stations, the
+   * higher one wins.
+   */
+  function raiseOf({ lifts, liftHeight, buildings: raised, zPerM }) {
+    if (!lifts && !raised) return null;
+    const out = new Float32Array(model.grid.length);
+    for (let v = 0; v < out.length; v++) {
+      out[v] = Math.max(lifts ? lifts[v] * liftHeight : 0, raised ? raised.raise[v] * zPerM : 0);
+    }
+    return out;
+  }
 
   // The model cut below and above each contour line: one STL for the terrain and one
   // per line (or one for all lines every N meters), which a slicer loads as parts of
@@ -417,7 +457,7 @@ export function createPrintArea(map, { demSource, sea, lifts, sourceId, form }) 
         levels.push(slice.hi);
         owners.push(null);
       }
-      const bands = buildBands({ ...model, ...m, raise: liftRaise(m), levels });
+      const bands = buildBands({ ...model, ...m, raise: raiseOf(m), levels });
       const lineFiles = [...new Set(slices.map(sliceFile))];
       const parts = [
         { name: 'terrain.stl', meshes: bands.filter((_, k) => !owners[k]) },
@@ -445,6 +485,7 @@ export function createPrintArea(map, { demSource, sea, lifts, sourceId, form }) 
       `Model ${m.width.toFixed(0)} x ${m.depth.toFixed(0)} x ${m.height.toFixed(0)} mm, scale 1:${Math.round(m.scale)}, height scale ${readNumber(inputs.exaggeration)}`,
       ...(m.land ? ['Cut off at the coastline, so only the land is printed.'] : []),
       ...(m.lifts ? [`Ski lifts: ridges ${m.liftHeight} mm high and ${LIFT_WIDTH_MM} mm wide, in the filament of the part around them.`] : []),
+      ...(m.buildings ? ['Buildings: flat-roofed blocks on the lowest ground under each, at the height scale, in the filament of the part around them.'] : []),
       '',
       'Parts:',
       `  ${'terrain.stl'.padEnd(pad)}the terrain, in your main filament`,
@@ -459,7 +500,13 @@ export function createPrintArea(map, { demSource, sea, lifts, sourceId, form }) 
       'The parts line up because they share coordinates.',
       '',
       'Elevation data: Mapterhorn and its sources, https://mapterhorn.com/attribution',
-      ...(m.land || m.lifts ? ['Map data: (c) OpenStreetMap contributors, https://www.openstreetmap.org/copyright'] : []),
+      ...(m.land || m.lifts || m.buildings ? ['Map data: (c) OpenStreetMap contributors, https://www.openstreetmap.org/copyright'] : []),
+      ...(m.buildings
+        ? [
+          'Buildings: GlobalBuildingAtlas (Zhu et al. 2025), CC BY-NC 4.0, not for commercial use,',
+          '  https://github.com/zhu-xlab/GlobalBuildingAtlas',
+        ]
+        : []),
       '',
     ].join('\n');
   }
@@ -521,6 +568,12 @@ export function createPrintArea(map, { demSource, sea, lifts, sourceId, form }) 
       inputs.lift.closest('label').hidden = !on;
       if (!stale()) render();
       else if (enabled) scheduleUpdate(); // load them; or else when the panel opens
+    },
+    /** Whether the buildings stand on the terrain. */
+    setBuildings(on) {
+      buildingsOn = on;
+      if (!stale()) render();
+      else if (enabled) scheduleUpdate();
     },
   };
 }

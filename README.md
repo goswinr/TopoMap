@@ -3,8 +3,8 @@
 https://goswinr.github.io/TopoMap/
 
 > [!WARNING]
-> 100% vibe coded
-> I never looked at the code
+> 100% vibe coded.
+> I never looked at the code.
 
 
 A 2D and 3D topographic web map built with [MapLibre GL JS](https://maplibre.org/) and open

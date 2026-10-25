@@ -4,12 +4,15 @@ https://goswinr.github.io/TopoMap/
 
 > [!WARNING]
 > 100% vibe coded
+> I never looked at the code
 
 
 A 2D and 3D topographic web map built with [MapLibre GL JS](https://maplibre.org/) and open
 terrain data from [Mapterhorn](https://mapterhorn.com/). It opens on the Matterhorn and is
 made for exploring elevation: up to three contour lines you can move up and down (or one
 every N meters), and roads that light up when they climb above a chosen height.
+
+![TopoMap showing terrain contours and a selected 3D print area](media/2026-10-25%2010_08_57.png)
 
 ## Features
 
